@@ -31,6 +31,7 @@ from affichage import (
     make_cavatappi_interactive_html,
     make_cross_section_figure,
     mapping_to_csv_bytes,
+    plot_field_section,
     plot_hysteresis_overlay,
     plot_experimental_force_pressure,
     plot_time_response_with_experiment_fr,
@@ -46,6 +47,9 @@ from parametres import (
     BIAS_ANGLE_PROFILE_LABELS,
     BIAS_ANGLE_PROFILE_OPTIONS,
     DEFAULT_SETTINGS,
+    FIELD_COMPONENT_LABELS,
+    FIELD_EXPORT_LABELS,
+    FIELD_EXPORT_OPTIONS,
     HYSTERESIS_RESULT_PATH,
     INTEGRATION_LABELS,
     INTEGRATION_OPTIONS,
@@ -132,6 +136,109 @@ def render_csv_download(payload: bytes | None, filename: str, key: str) -> None:
     )
 
 
+FIELD_CSV_BYTES_PER_ROW = 140  # mesure sur l'export (15 colonnes, 8 chiffres significatifs)
+
+
+def field_export_from_settings(settings: dict[str, SettingValue]) -> modele.FieldExport:
+    return modele.FieldExport(
+        mode=str(settings.get("field_export_mode", "none")),
+        every_n=int(settings.get("field_export_every_n", 10)),
+    )
+
+
+def estimated_field_rows(settings: dict[str, SettingValue], steps: int) -> int:
+    """Lignes du CSV des champs pour `steps` pas Δt (itérations 0 à steps)."""
+    export = field_export_from_settings(settings)
+    if not export.enabled:
+        return 0
+    if export.mode == "every":
+        snapshots = steps + 1
+    elif export.mode == "every_n":
+        snapshots = steps // export.every_n + 1 + (1 if steps % export.every_n else 0)
+    else:
+        snapshots = 1
+    return snapshots * int(settings["n_layers"]) * int(settings["n_phi"])
+
+
+def render_field_section(
+    result: dict,
+    requested_settings: dict[str, SettingValue],
+    file_name: str,
+    key: str,
+) -> None:
+    """Affichage et export CSV des champs σ / ε enregistrés pendant un calcul."""
+    fields = result["data"].get("fields")
+    used = field_export_from_settings(result["settings"])
+    requested = field_export_from_settings(requested_settings)
+    with st.expander("Champs de contraintes et de déformations (σ, ε)", expanded=False):
+        if (used.mode, used.every_n if used.mode == "every_n" else 0) != (
+            requested.mode,
+            requested.every_n if requested.mode == "every_n" else 0,
+        ):
+            st.info(
+                f"Ce calcul a été fait avec l’export « {FIELD_EXPORT_LABELS[used.mode]} » ; "
+                f"relancez-le pour appliquer « {FIELD_EXPORT_LABELS[requested.mode]} »."
+            )
+        if fields is None:
+            st.caption(
+                "Aucun champ enregistré pour ce calcul. Choisissez une fréquence d’export dans le volet "
+                "« Champs de contraintes et déformations » de la barre latérale, puis relancez le calcul."
+            )
+            return
+        iterations = np.asarray(fields["iteration"], dtype=int)
+        times = np.asarray(fields["time_s"], dtype=float)
+        pressures = np.asarray(fields["pressure_MPa"], dtype=float)
+        component_column, instant_column = st.columns([1.0, 1.4])
+        component = component_column.selectbox(
+            "Composante",
+            list(FIELD_COMPONENT_LABELS),
+            format_func=lambda name: FIELD_COMPONENT_LABELS[name][0],
+            key=f"{key}_component",
+        )
+        if iterations.size > 1:
+            snapshot = instant_column.select_slider(
+                "Instant enregistré",
+                options=list(range(iterations.size)),
+                value=iterations.size - 1,
+                format_func=lambda i: f"it. {iterations[i]} · t = {times[i]:.2f} s",
+                key=f"{key}_snapshot",
+            )
+        else:
+            snapshot = 0
+            instant_column.caption(f"Instant enregistré : itération {iterations[0]}, t = {times[0]:.2f} s.")
+        label, unit = FIELD_COMPONENT_LABELS[component]
+        values = modele.field_component(fields, component)[snapshot]
+        fig_field = plot_field_section(
+            fields["R_edges_mm"][snapshot],
+            fields["phi_rad"],
+            values,
+            label.split(",")[0],
+            unit,
+            title=(
+                f"{label} — it. {iterations[snapshot]}, t = {times[snapshot]:.2f} s, "
+                f"P = {pressures[snapshot]:.3f} MPa"
+            ),
+        )
+        st.pyplot(fig_field)
+        plt.close(fig_field)
+        n_rows = iterations.size * values.size
+        st.caption(
+            f"{iterations.size} instant(s) × {values.shape[0]} couches × {values.shape[1]} divisions φ = "
+            f"{n_rows} lignes (~{n_rows * FIELD_CSV_BYTES_PER_ROW / 1.0e6:.1f} Mo). Unités : s, mm, rad, MPa ; "
+            "ε_sφ est la composante tensorielle (γ/2). Les composantes restent dans le repère local (s, φ, r) ; "
+            "seules les positions sont cartésiennes (z = s, section s = 0)."
+        )
+        st.download_button(
+            "Exporter les champs en CSV",
+            data=lambda: modele.fields_to_csv_text(fields).encode("utf-8-sig"),
+            file_name=file_name,
+            mime="text/csv; charset=utf-8",
+            key=f"{key}_download",
+            on_click="ignore",
+            icon=":material/download:",
+        )
+
+
 def export_metadata(settings: dict[str, SettingValue], simulation: str) -> dict[str, SettingValue]:
     return {
         "export_format": "cavatappi-alpha-v2-results",
@@ -210,6 +317,10 @@ TEMPORAL_DISPLAY_SETTING_KEYS = {
     # Option d'affichage pur : ne doit jamais invalider un resultat calcule
     # (sinon cocher/decocher la superposition fait disparaitre le graphe).
     "experimental_overlay_single_graph",
+    # La frequence d'export des champs ne change pas les series temporelles :
+    # le volet des champs signale lui-meme qu'un nouveau calcul est necessaire.
+    "field_export_mode",
+    "field_export_every_n",
 }
 BLOCKED_RESULT_IGNORE_KEYS = TEMPORAL_DISPLAY_SETTING_KEYS | {
     "eps_study_min",
@@ -472,7 +583,12 @@ def run_model(settings: dict[str, SettingValue], measured_history=None):
             config.n_cycles = max(1, int(round(float(pressure_time[-1]) / measured_period)))
         else:
             config.n_cycles = 1
-    _, data = modele.run_blocked_actuation(config, pressure_time=pressure_time, pressure_MPa=pressure_mpa)
+    _, data = modele.run_blocked_actuation(
+        config,
+        pressure_time=pressure_time,
+        pressure_MPa=pressure_mpa,
+        field_export=field_export_from_settings(settings),
+    )
     return config, data, modele.summary(data)
 
 
@@ -492,7 +608,12 @@ def run_relaxation_model(settings: dict[str, SettingValue]):
         dt=config.dt,
         nonlinear_ramp=bool(config.nonlinear_pressure),
     )
-    _, data = modele.run_blocked_actuation(config, pressure_time=pressure_time, pressure_MPa=pressure_mpa)
+    _, data = modele.run_blocked_actuation(
+        config,
+        pressure_time=pressure_time,
+        pressure_MPa=pressure_mpa,
+        field_export=field_export_from_settings(settings),
+    )
     hold_start_index = int(np.searchsorted(data["time"], ramp_time, side="left"))
     hold_start_index = min(max(hold_start_index, 0), len(data["time"]) - 1)
     data["ramp_time"] = float(ramp_time)
@@ -546,6 +667,7 @@ def run_suspended_model(settings: dict[str, SettingValue]):
         pressure_time=pressure_time,
         pressure_MPa=pressure_mpa,
         equilibrate_load_before_pressure=bool(settings["suspended_equilibrate_before_pressure"]),
+        field_export=field_export_from_settings(settings),
     )
     hold_start_index = int(np.searchsorted(data["time"], hold_start_time, side="left"))
     hold_start_index = min(max(hold_start_index, 0), len(data["time"]) - 1)
@@ -1125,6 +1247,28 @@ with st.sidebar.expander("Relaxation"):
         "Temps de maintien à pression constante (s)", 0.0, 5000.0, float(settings["relaxation_hold_time_s"]), 10.0
     )
 
+field_export_mode = str(settings.get("field_export_mode", "none"))
+field_export_every_n = int(settings.get("field_export_every_n", 10))
+with st.sidebar.expander("Champs de contraintes et déformations"):
+    sidebar_help(
+        [
+            "Enregistre σ_ss, σ_φφ, σ_rr, σ_sφ et ε_ss, ε_φφ, ε_rr, ε_sφ au centre de chaque couche et de chaque division φ, pour l’actionnement bloqué, la relaxation et la masse suspendue.",
+            "Les coordonnées locales (r, φ) sont converties en x = r cos φ, y = r sin φ, avec z = s. Les champs du modèle ne dépendent pas de s : la section exportée est s = 0.",
+            "L’itération 0 est l’état précontraint à t = 0 ; chaque itération suivante est un pas Δt. En mode « toutes les n itérations », la dernière est toujours incluse.",
+            "Le fichier compte couches × divisions φ lignes par instant enregistré. Les déformations cumulent les incréments depuis l’état fabriqué, pré-étirement compris.",
+        ]
+    )
+    field_export_mode = st.selectbox(
+        "Fréquence d’export des champs",
+        FIELD_EXPORT_OPTIONS,
+        index=option_index(FIELD_EXPORT_OPTIONS, field_export_mode),
+        format_func=lambda value: FIELD_EXPORT_LABELS.get(value, value),
+    )
+    if field_export_mode == "every_n":
+        field_export_every_n = int(
+            st.number_input("n (itérations Δt entre deux sauvegardes)", 1, 1_000_000, max(1, field_export_every_n), 1)
+        )
+
 E_axial_mpa = float(settings["E_axial_mpa"])
 axial_modulus_mode = str(settings["axial_modulus_mode"])
 maxwell_anisotropy_mode = str(settings["maxwell_anisotropy_mode"])
@@ -1420,6 +1564,8 @@ current_settings = {
     "eyring_sigma_star_mpa": float(eyring_sigma_star_mpa),
     "anchor_creep_c_mm": float(anchor_creep_c_mm),
     "anchor_creep_t0_s": float(anchor_creep_t0_s),
+    "field_export_mode": str(field_export_mode),
+    "field_export_every_n": int(field_export_every_n),
     "n_layers": int(n_layers),
     "n_phi": int(n_phi),
     "parallel_workers": int(parallel_workers),
@@ -1652,6 +1798,18 @@ with action_status_column:
         st.caption("Calcul exigeant : la barre de progression donnera une estimation actualisée.")
     else:
         st.caption("Les résultats seront conservés et réaffichés au prochain démarrage.")
+field_rows_estimate = estimated_field_rows(current_settings, estimated_steps)
+if field_rows_estimate:
+    field_mode_label = FIELD_EXPORT_LABELS[str(field_export_mode)]
+    field_message = (
+        f"Export des champs σ et ε ({field_mode_label[0].lower() + field_mode_label[1:]}) : environ "
+        f"{field_rows_estimate} lignes (~{field_rows_estimate * FIELD_CSV_BYTES_PER_ROW / 1.0e6:.1f} Mo) "
+        "pour l’actionnement bloqué."
+    )
+    if field_rows_estimate > 1_000_000:
+        st.warning(field_message + " Fichier volumineux : préférez un export toutes les n itérations.")
+    else:
+        st.caption(field_message)
 
 if run_blocked_now:
     (config, data, summary), elapsed_s = run_with_progress(
@@ -1798,6 +1956,8 @@ with tabs[0]:
         "resultats_actionnement_bloque.csv",
         "download_blocked_csv",
     )
+    if result is not None:
+        render_field_section(result, current_settings, "champs_actionnement_bloque.csv", "fields_blocked")
 
 with tabs[1]:
     temporal_csv_payload = None
@@ -2196,6 +2356,8 @@ with tabs[3]:
         "resultats_relaxation.csv",
         "download_relaxation_csv",
     )
+    if relaxation_result is not None:
+        render_field_section(relaxation_result, current_settings, "champs_relaxation.csv", "fields_relaxation")
 
 with tabs[4]:
     prestrain_csv_payload = None
@@ -2413,3 +2575,5 @@ with tabs[5]:
         "resultats_masse_suspendue.csv",
         "download_suspended_csv",
     )
+    if suspended_result is not None:
+        render_field_section(suspended_result, current_settings, "champs_masse_suspendue.csv", "fields_suspended")

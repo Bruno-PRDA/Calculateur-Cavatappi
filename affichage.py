@@ -1219,6 +1219,66 @@ def make_cross_section_figure(settings: dict[str, SettingValue]):
     return _style_figure(fig)
 
 
+def plot_field_section(
+    r_edges: np.ndarray,
+    phi: np.ndarray,
+    values: np.ndarray,
+    label: str,
+    unit: str,
+    title: str = "",
+):
+    """Carte d'une composante (couches × phi) sur la section en x = r cos φ, y = r sin φ,
+    et profils radiaux : moyenne sur φ, extrados (φ = 0) et intrados (φ = π)."""
+    r_edges = np.asarray(r_edges, dtype=float)
+    phi = np.asarray(phi, dtype=float)
+    values = np.asarray(values, dtype=float)
+    half = np.pi / phi.size
+    phi_edges = np.concatenate((phi - half, [phi[-1] + half]))
+    radius, angle = np.meshgrid(r_edges, phi_edges, indexing="ij")
+
+    fig, (ax_map, ax_profile) = plt.subplots(
+        1, 2, figsize=(10.8, 4.6), gridspec_kw={"width_ratios": [1.0, 1.05]}, constrained_layout=True
+    )
+    finite = values[np.isfinite(values)]
+    low = float(finite.min()) if finite.size else 0.0
+    high = float(finite.max()) if finite.size else 0.0
+    if low < 0.0 < high:
+        bound = max(abs(low), abs(high))
+        cmap, vmin, vmax = "RdBu_r", -bound, bound
+    else:
+        cmap, vmin, vmax = "viridis", low, high
+    mesh = ax_map.pcolormesh(
+        radius * np.cos(angle), radius * np.sin(angle), values, cmap=cmap, vmin=vmin, vmax=vmax, shading="flat"
+    )
+    colorbar = fig.colorbar(mesh, ax=ax_map, shrink=0.88)
+    colorbar.set_label(unit if unit != "–" else "sans dimension", color=PLOT_TEXT)
+    colorbar.ax.tick_params(colors=PLOT_TEXT)
+    rout = float(r_edges[-1])
+    ax_map.set_xlim(-1.35 * rout, 1.35 * rout)
+    ax_map.set_ylim(-1.2 * rout, 1.2 * rout)
+    ax_map.set_aspect("equal", adjustable="box")
+    ax_map.set_xlabel("x = r cos φ (mm)")
+    ax_map.set_ylabel("y = r sin φ (mm)")
+    ax_map.text(1.08 * rout, 0.0, "φ = 0\nextrados", ha="left", va="center", fontsize=8)
+    ax_map.text(-1.08 * rout, 0.0, "φ = π\nintrados", ha="right", va="center", fontsize=8)
+    ax_map.set_title(title or label, fontsize=10)
+    ax_map.grid(False)
+
+    centers = 0.5 * (r_edges[:-1] + r_edges[1:])
+    k_extrados = int(np.argmin(np.abs(np.angle(np.exp(1j * phi)))))
+    k_intrados = int(np.argmin(np.abs(np.angle(np.exp(1j * (phi - np.pi))))))
+    for edge in r_edges:
+        ax_profile.axvline(edge, color=PLOT_GRID, lw=0.7, ls=":", alpha=0.6)
+    ax_profile.plot(centers, values.mean(axis=1), "-", color="#e8edf5", lw=1.8, label="moyenne sur φ")
+    ax_profile.plot(centers, values[:, k_extrados], "-o", color="#6fb7ff", lw=1.2, ms=3.5, label="φ = 0 (extrados)")
+    ax_profile.plot(centers, values[:, k_intrados], "-s", color="#ff7f6e", lw=1.2, ms=3.5, label="φ = π (intrados)")
+    ax_profile.set_xlabel("rayon r (mm), pointillés : interfaces des couches")
+    ax_profile.set_ylabel(f"{label} ({unit})" if unit != "–" else label)
+    ax_profile.grid(True)
+    ax_profile.legend(loc="best", fontsize=8)
+    return _style_figure(fig)
+
+
 def plot_time_response_fr(
     data: dict[str, np.ndarray],
     show_torque: bool = True,

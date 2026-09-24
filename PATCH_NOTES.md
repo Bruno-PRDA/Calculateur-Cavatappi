@@ -1,5 +1,26 @@
 # Notes de version
 
+## 2026.09.24 — Export des champs σ et ε (moteur `2026.09.24-v4-17`)
+
+- Le moteur cumule la déformation totale par couche et par division φ
+  (`strain_total`, somme des incréments engagés) et peut enregistrer
+  contraintes et déformations le long de l'historique de pression :
+  `FieldExport(mode, every_n)` avec les modes `none` (défaut), `every`,
+  `every_n` et `final`, accepté par `run_blocked_actuation`,
+  `run_suspended_actuation` et `run_hold_relaxation`. Les champs arrivent dans
+  `data["fields"]` ; `field_table`, `fields_to_csv_text` et `write_fields_csv`
+  les mettent en table longue (x = r cos φ, y = r sin φ, z = s).
+- Interface : volet « Champs de contraintes et déformations » dans la barre
+  latérale (fréquence et n), estimation de la taille du fichier sous la barre
+  de calcul, et dans les onglets actionnement bloqué, relaxation et masse
+  suspendue : carte de la section, profils radiaux et export CSV. Changer la
+  fréquence n'invalide pas les courbes déjà calculées ; le volet des champs
+  demande seulement de relancer le calcul.
+- Réglages : schéma 19 (clés `field_export_mode` et `field_export_every_n`).
+- Export désactivé : sorties bit-identiques à v4-16 (actionnement bloqué en
+  section fixe et réactualisée, masse suspendue). Tests : 1 test ajouté
+  (38 au total), baseline figure 7 inchangée.
+
 ## 2026.09.07 — Vitesse de pression en MPa/s (moteur `2026.09.07-v4-16`)
 
 - Le profil de pression généré est défini par la vitesse de pression des

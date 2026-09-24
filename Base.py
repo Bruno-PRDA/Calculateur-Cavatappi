@@ -26,7 +26,7 @@ import numpy as np
 from scipy.optimize import brentq, least_squares, minimize_scalar
 
 
-MODEL_VERSION = "2026.09.07-v4-16"
+MODEL_VERSION = "2026.09.24-v4-17"
 
 # Exposants du profil de pression phenomenologique non lineaire (uniques pour
 # tout le projet ; parametres.make_pressure_history les importe aussi).
@@ -276,6 +276,121 @@ class StepResult:
     ovality: float = 0.0
     pressure_friction: float = 0.0
     anchor_creep: float = 0.0
+
+
+# ---------------------------------------------------------------------------
+# Export des champs locaux de contrainte et de deformation
+# ---------------------------------------------------------------------------
+
+# Frequence d'enregistrement des champs sur l'historique de pression :
+#   none    : aucun enregistrement (defaut, sorties inchangees) ;
+#   every   : a chaque iteration dt, etat initial (iteration 0) compris ;
+#   every_n : iterations 0, n, 2n, ... et toujours la derniere ;
+#   final   : uniquement l'instant final t_final.
+FIELD_EXPORT_MODES = ("none", "every", "every_n", "final")
+
+# Composantes exportees : (tableau, indice Voigt du moteur, facteur).
+# Ordre Voigt du moteur : (s, phi, r, -, -, phi s) ; la deformation stocke le
+# glissement de l'ingenieur gamma_phi_s, la composante tensorielle vaut gamma/2.
+FIELD_COMPONENTS = {
+    "sigma_ss": ("sigma_MPa", 0, 1.0),
+    "sigma_phiphi": ("sigma_MPa", 1, 1.0),
+    "sigma_rr": ("sigma_MPa", 2, 1.0),
+    "sigma_sphi": ("sigma_MPa", 5, 1.0),
+    "epsilon_ss": ("strain", 0, 1.0),
+    "epsilon_phiphi": ("strain", 1, 1.0),
+    "epsilon_rr": ("strain", 2, 1.0),
+    "epsilon_sphi": ("strain", 5, 0.5),
+}
+FIELD_CSV_COLUMNS = ("iteration", "t", "x", "y", "z", "r", "phi") + tuple(FIELD_COMPONENTS)
+
+
+@dataclass(frozen=True)
+class FieldExport:
+    """Choix de la frequence d'enregistrement des champs (voir FIELD_EXPORT_MODES)."""
+
+    mode: str = "none"
+    every_n: int = 1
+
+    def __post_init__(self) -> None:
+        if self.mode not in FIELD_EXPORT_MODES:
+            raise ValueError(f"field export mode must be one of {FIELD_EXPORT_MODES}.")
+        if int(self.every_n) < 1:
+            raise ValueError("field export every_n must be a positive integer.")
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode != "none"
+
+    def due(self, iteration: int, last_iteration: Optional[int]) -> bool:
+        if self.mode == "every":
+            return True
+        is_last = last_iteration is not None and iteration == last_iteration
+        if self.mode == "every_n":
+            return iteration % int(self.every_n) == 0 or is_last
+        if self.mode == "final":
+            return is_last
+        return False
+
+
+def field_component(fields: Dict[str, object], name: str) -> np.ndarray:
+    """Composante `name` de FIELD_COMPONENTS, tableau (instants, couches, phi)."""
+    key, index, factor = FIELD_COMPONENTS[name]
+    return factor * np.asarray(fields[key], dtype=float)[..., index]
+
+
+def field_table(fields: Dict[str, object]) -> Dict[str, np.ndarray]:
+    """Table longue des champs, une ligne par (instant, couche, phi).
+
+    Coordonnees : x = r cos(phi), y = r sin(phi), z = s ; phi = 0 est
+    l'extrados (cote oppose a l'axe de l'helice, facteur 1 + K r cos(phi)
+    maximal). r est le rayon courant du centre de couche. Les champs du modele
+    ne dependent pas de s (helice uniforme) : la section exportee est s = 0.
+    """
+    radii = np.asarray(fields["R_centers_mm"], dtype=float)
+    phi = np.asarray(fields["phi_rad"], dtype=float)
+    n_snap, n_layers = radii.shape
+    shape = (n_snap, n_layers, phi.size)
+    r = np.broadcast_to(radii[:, :, None], shape)
+    ph = np.broadcast_to(phi[None, None, :], shape)
+    table = {
+        "iteration": np.broadcast_to(np.asarray(fields["iteration"])[:, None, None], shape),
+        "t": np.broadcast_to(np.asarray(fields["time_s"], dtype=float)[:, None, None], shape),
+        "x": r * np.cos(ph),
+        "y": r * np.sin(ph),
+        "z": np.full(shape, float(fields.get("s_mm", 0.0))),
+        "r": r,
+        "phi": ph,
+    }
+    for name in FIELD_COMPONENTS:
+        table[name] = field_component(fields, name)
+    return {key: np.ascontiguousarray(value).reshape(-1) for key, value in table.items()}
+
+
+def fields_to_csv_text(fields: Dict[str, object], delimiter: str = ";") -> str:
+    """CSV des champs (colonnes FIELD_CSV_COLUMNS) ; MPa, mm, rad, s."""
+    from io import StringIO
+
+    table = field_table(fields)
+    matrix = np.column_stack([table[key] for key in FIELD_CSV_COLUMNS])
+    stream = StringIO(newline="")
+    np.savetxt(
+        stream,
+        matrix,
+        fmt=["%d"] + ["%.8g"] * (len(FIELD_CSV_COLUMNS) - 1),
+        delimiter=delimiter,
+        header=delimiter.join(FIELD_CSV_COLUMNS),
+        comments="",
+        newline="\n",
+    )
+    return stream.getvalue()
+
+
+def write_fields_csv(fields: Dict[str, object], path, delimiter: str = ";") -> Path:
+    """Ecrit le CSV des champs, en UTF-8 avec BOM comme les autres exports."""
+    path = Path(path)
+    path.write_text(fields_to_csv_text(fields, delimiter), encoding="utf-8-sig", newline="")
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -531,6 +646,13 @@ class TCPAMaxwellBlockedModel:
         self.sigma0 = np.zeros(shape)
         self.sigma_i = np.zeros((self.n_maxwell,) + shape)
         self.sigma_total = np.zeros(shape)
+        # Deformation totale : somme des increments Voigt engages depuis l'etat
+        # fabrique (pre-etirement compris). En section reactualisee chaque
+        # increment est mesure sur la configuration courante (≈ Hencky).
+        self.strain_total = np.zeros(shape)
+        self._field_export: Optional[FieldExport] = None
+        self._field_time_origin = 0.0
+        self.field_snapshots: List[Dict[str, object]] = []
         self.Fnylon = 0.0
         self.Mnylon = 0.0
         self.Tnylon = 0.0
@@ -1207,6 +1329,7 @@ class TCPAMaxwellBlockedModel:
         sigma0_new = np.empty_like(self.sigma0)
         sigma_i_new = np.empty_like(self.sigma_i)
         sigma_total_new = np.empty_like(self.sigma_total)
+        strain_increment = np.zeros_like(self.sigma_total)
         K_old = (np.cos(self.helix.alpha) ** 2) / self.helix.rho
         rates_layers = self._branch_rates_per_layer() if self.eyring_sigma_star > 0.0 else None
 
@@ -1230,6 +1353,7 @@ class TCPAMaxwellBlockedModel:
                 eps_s = dw + curv
                 gamma_sphi = dv * R_eval / denom - v14b * curv
                 de = np.array([eps_s, eps_phi, eps_r, 0.0, 0.0, gamma_sphi], dtype=float)
+                strain_increment[j, k] = de
                 if self._building_reference_state:
                     sigma_reference_new[j, k] = self.sigma_reference[j, k] + self.C_total[j] @ de
                     sigma0_new[j, k] = self.sigma0[j, k]
@@ -1282,6 +1406,7 @@ class TCPAMaxwellBlockedModel:
             "sigma0_new": sigma0_new,
             "sigma_i_new": sigma_i_new,
             "sigma_total_new": sigma_total_new,
+            "strain_increment": strain_increment,
             "Fny": Fny,
             "Mny": Mny,
             "Tny": Tny,
@@ -1333,6 +1458,7 @@ class TCPAMaxwellBlockedModel:
         sigma0_new = np.empty_like(self.sigma0)
         sigma_i_new = np.empty_like(self.sigma_i)
         sigma_total_new = np.empty_like(self.sigma_total)
+        strain_increment = np.zeros_like(self.sigma_total)
         K_old = (np.cos(self.helix.alpha) ** 2) / self.helix.rho
         rates_layers = self._branch_rates_per_layer() if self.eyring_sigma_star > 0.0 else None
 
@@ -1356,6 +1482,7 @@ class TCPAMaxwellBlockedModel:
                 eps_s = dw + curv
                 gamma_sphi = dv * R_eval / denom - v14b * curv
                 de = np.array([eps_s, eps_phi, eps_r, 0.0, 0.0, gamma_sphi], dtype=float)
+                strain_increment[j, k] = de
                 if self._building_reference_state:
                     sigma_reference_new[j, k] = self.sigma_reference[j, k] + self.C_total[j] @ de
                     sigma0_new[j, k] = self.sigma0[j, k]
@@ -1394,6 +1521,7 @@ class TCPAMaxwellBlockedModel:
             "sigma0_new": sigma0_new,
             "sigma_i_new": sigma_i_new,
             "sigma_total_new": sigma_total_new,
+            "strain_increment": strain_increment,
             "Fny": Fny,
             "Mny": Mny,
             "Tny": Tny,
@@ -1580,6 +1708,7 @@ class TCPAMaxwellBlockedModel:
         self.sigma0 = trial["sigma0_new"]
         self.sigma_i = trial["sigma_i_new"]
         self.sigma_total = trial["sigma_total_new"]
+        self.strain_total = self.strain_total + trial["strain_increment"]
         self.Fnylon = float(trial["Fny"])
         self.Mnylon = float(trial["Mny"])
         self.Tnylon = float(trial["Tny"])
@@ -2046,6 +2175,50 @@ class TCPAMaxwellBlockedModel:
                 stacklevel=2,
             )
 
+    def begin_field_recording(self, export: Optional[FieldExport]) -> None:
+        """Arme l'enregistrement des champs ; l'etat courant devient l'iteration 0 (t = 0).
+
+        Les iterations suivantes sont les pas de run_pressure_history(_suspended).
+        """
+        self.field_snapshots = []
+        self._field_export = export if export is not None and export.enabled else None
+        self._field_time_origin = float(self.helix.time)
+        self._record_fields_if_due(0, None)
+
+    def _record_fields_if_due(self, iteration: int, last_iteration: Optional[int]) -> None:
+        if self._field_export is None or not self._field_export.due(iteration, last_iteration):
+            return
+        self.field_snapshots.append(
+            {
+                "iteration": int(iteration),
+                "time_s": float(self.helix.time) - self._field_time_origin,
+                "pressure_MPa": float(self.helix.pressure),
+                "R_centers_mm": self.R_centers.copy(),
+                "R_edges_mm": self.R_edges.copy(),
+                "sigma_MPa": self.sigma_total.copy(),
+                "strain": self.strain_total.copy(),
+            }
+        )
+
+    def field_arrays(self) -> Optional[Dict[str, object]]:
+        """Instantanes empiles : sigma_MPa et strain de forme (instants, couches, phi, 6)."""
+        if self._field_export is None or not self.field_snapshots:
+            return None
+        snaps = self.field_snapshots
+        return {
+            "iteration": np.array([s["iteration"] for s in snaps], dtype=int),
+            "time_s": np.array([s["time_s"] for s in snaps], dtype=float),
+            "pressure_MPa": np.array([s["pressure_MPa"] for s in snaps], dtype=float),
+            "R_centers_mm": np.stack([s["R_centers_mm"] for s in snaps]),
+            "R_edges_mm": np.stack([s["R_edges_mm"] for s in snaps]),
+            "phi_rad": self.phi.copy(),
+            "s_mm": 0.0,
+            "sigma_MPa": np.stack([s["sigma_MPa"] for s in snaps]),
+            "strain": np.stack([s["strain"] for s in snaps]),
+            "export_mode": self._field_export.mode,
+            "every_n": int(self._field_export.every_n),
+        }
+
     def run_pressure_history(self, time: np.ndarray, pressure: np.ndarray) -> List[StepResult]:
         if len(time) != len(pressure):
             raise ValueError("time and pressure must have the same length.")
@@ -2064,6 +2237,7 @@ class TCPAMaxwellBlockedModel:
                 self.step(float(pressure[k]), dt, h_target=self.h_blocked - creep / (2.0 * np.pi * self.turns))
             else:
                 self.step(float(pressure[k]), dt, h_target=self.h_blocked)
+            self._record_fields_if_due(k, len(time) - 1)
         return self.history
 
     def run_pressure_history_suspended(self, time: np.ndarray, pressure: np.ndarray, load_N: float) -> List[StepResult]:
@@ -2074,6 +2248,7 @@ class TCPAMaxwellBlockedModel:
             if dt <= 0.0:
                 raise ValueError("time must be strictly increasing.")
             self.step_suspended(float(pressure[k]), dt, load_N)
+            self._record_fields_if_due(k, len(time) - 1)
         return self.history
 
     def history_arrays(self) -> Dict[str, np.ndarray]:
@@ -2369,6 +2544,7 @@ def run_blocked_actuation(
     config: Optional[object] = None,
     pressure_time: Optional[np.ndarray] = None,
     pressure_MPa: Optional[np.ndarray] = None,
+    field_export: Optional[FieldExport] = None,
     **overrides,
 ) -> Tuple[TCPAMaxwellBlockedModel, Dict[str, np.ndarray]]:
     """Lancer la simulation bloquee corrigee.
@@ -2376,6 +2552,11 @@ def run_blocked_actuation(
     Exemples :
         run_blocked_actuation(eps=0.8)
         run_blocked_actuation(eps=0.8, n_cycles=3, Pmax=1.3)
+        run_blocked_actuation(eps=0.8, field_export=FieldExport("every_n", 10))
+
+    Avec field_export, data["fields"] contient les champs sigma et epsilon
+    enregistres (voir field_table et write_fields_csv) ; l'iteration i des
+    champs correspond a la ligne i des series temporelles.
     """
     cfg = _config_with_overrides(config, **overrides)
     disc = default_discretization(
@@ -2422,11 +2603,15 @@ def run_blocked_actuation(
         model.step(float(pressure[0]), 0.0, h_target=model.h_blocked)
         model.lock_blocked_series_reference()
     i_act0 = len(model.history) - 1
+    model.begin_field_recording(field_export)
     model.run_pressure_history(t_start + t_local, pressure)
     full = model.history_arrays()
     arr = {key: value[i_act0:].copy() for key, value in full.items()}
     arr["time"] = arr["time"] - t_start
     add_corrected_output_conventions(arr)
+    fields = model.field_arrays()
+    if fields is not None:
+        arr["fields"] = fields
     return model, arr
 
 
@@ -2483,6 +2668,7 @@ def run_suspended_actuation(
     pressure_MPa: Optional[np.ndarray] = None,
     equilibrate_load_before_pressure: bool = True,
     load_ramp_steps: int = 8,
+    field_export: Optional[FieldExport] = None,
     **overrides,
 ) -> Tuple[TCPAMaxwellBlockedModel, Dict[str, np.ndarray]]:
     """Lancer la simulation en actionnement libre avec une masse suspendue.
@@ -2551,11 +2737,15 @@ def run_suspended_actuation(
         + model.uncoiled_length
         + model.prestretch_end_extension_mm
     )
+    model.begin_field_recording(field_export)
     model.run_pressure_history_suspended(t_start + t_local, pressure, float(load_N))
     full = model.history_arrays()
     arr = {key: value[i_act0:].copy() for key, value in full.items()}
     arr["time"] = arr["time"] - t_start
     add_corrected_output_conventions(arr)
+    fields = model.field_arrays()
+    if fields is not None:
+        arr["fields"] = fields
     arr["load_N"] = np.full_like(arr["time"], float(load_N), dtype=float)
     arr["load_mN"] = 1000.0 * arr["load_N"]
     if len(arr.get("axial_length_mm", [])) > 0:
@@ -2601,6 +2791,7 @@ def run_hold_relaxation(
     integration: str = "exponential",
     nonlinear_ramp: bool = False,
     gamma_ramp: float = NONLINEAR_GAMMA_LOAD,
+    field_export: Optional[FieldExport] = None,
 ):
     # La rampe suit desormais le meme defaut lineaire que le reste du projet ;
     # l'ancien defaut non lineaire gamma=3.5 de ce point d'entree contredisait
@@ -2622,7 +2813,7 @@ def run_hold_relaxation(
         pre_steps=pre_steps,
         integration=integration,
     )
-    model, arr = run_blocked_actuation(config, pressure_time=t, pressure_MPa=p)
+    model, arr = run_blocked_actuation(config, pressure_time=t, pressure_MPa=p, field_export=field_export)
     i0 = int(np.searchsorted(arr["time"], ramp_time, side="left"))
     arr["ramp_time"] = float(ramp_time)
     arr["hold_time"] = float(hold_time)

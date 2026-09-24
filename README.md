@@ -69,6 +69,46 @@ Le fichier utilise l'encodage UTF-8 et le séparateur `;` pour faciliter son
 ouverture dans un tableur en environnement français. L'export d'hystérèse
 indique le cas comparé, le numéro du cycle et le temps relatif dans le cycle.
 
+### Champs de contraintes et de déformations
+
+Le volet `Champs de contraintes et déformations` de la barre latérale
+enregistre, pendant l'actionnement bloqué, la relaxation et la masse
+suspendue, les composantes σ_ss, σ_φφ, σ_rr, σ_sφ et ε_ss, ε_φφ, ε_rr, ε_sφ au
+centre de chaque couche et de chaque division φ. Fréquences proposées :
+désactivé (défaut), à chaque itération Δt, toutes les n itérations Δt (la
+dernière est toujours incluse) ou uniquement à l'instant final. L'itération 0
+est l'état précontraint à t = 0 et correspond à la première ligne des séries
+temporelles.
+
+Chaque onglet de calcul affiche alors un volet `Champs de contraintes et de
+déformations (σ, ε)` : carte de la composante choisie sur la section, profils
+radiaux (moyenne sur φ, extrados, intrados) et bouton `Exporter les champs en
+CSV`. Colonnes :
+
+    iteration;t;x;y;z;r;phi;sigma_ss;sigma_phiphi;sigma_rr;sigma_sphi;epsilon_ss;epsilon_phiphi;epsilon_rr;epsilon_sphi
+
+- Une ligne par instant enregistré, par couche et par division φ ; unités s,
+  mm, rad et MPa.
+- x = r cos φ, y = r sin φ, z = s. φ = 0 est l'extrados (côté opposé à l'axe
+  de l'hélice) et r le rayon courant du centre de couche. Les champs du modèle
+  ne dépendent pas de s (hélice uniforme) : la section exportée est s = 0.
+- Les composantes restent exprimées dans le repère local (s, φ, r) ; seules
+  les positions sont cartésiennes. ε_sφ est la composante tensorielle, soit la
+  moitié du glissement γ_φs utilisé par le moteur.
+- Les déformations cumulent les incréments engagés depuis l'état fabriqué,
+  pré-étirement compris. En section réactualisée, chaque incrément est mesuré
+  sur la configuration courante, ce qui revient à une déformation
+  logarithmique.
+
+Depuis un script :
+
+```python
+import Base
+model, data = Base.run_blocked_actuation(eps=0.8, field_export=Base.FieldExport("every_n", 10))
+Base.write_fields_csv(data["fields"], "champs.csv")
+sigma_rr = Base.field_component(data["fields"], "sigma_rr")  # (instants, couches, phi)
+```
+
 ## Affichage d'un essai expérimental
 
 Dans l'onglet des courbes temporelles, le volet `Afficher un essai expérimental

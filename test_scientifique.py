@@ -425,6 +425,50 @@ def test_result_csv_exports() -> None:
     assert np.isclose(float(hysteresis_rows[-1]["pressure_psi"]), 1.0 / parametres.PSI_TO_MPA)
 
 
+def test_field_export() -> None:
+    """Export des champs sigma / epsilon : iterations enregistrees selon le mode,
+    coherence avec les series temporelles et l'etat du modele, CSV."""
+    kwargs = dict(eps=0.8, n_cycles=1, n_layers=3, n_phi=8, pre_steps=8, dt=1.5)
+    _, reference = Base.run_blocked_actuation(**kwargs)
+    assert "fields" not in reference
+    last = len(reference["time"]) - 1
+    expected = {
+        "every": list(range(last + 1)),
+        "every_n": sorted(set(range(0, last + 1, 4)) | {last}),
+        "final": [last],
+    }
+    for mode, iterations in expected.items():
+        model, data = Base.run_blocked_actuation(field_export=Base.FieldExport(mode, 4), **kwargs)
+        fields = data.pop("fields")
+        for key, value in reference.items():
+            assert np.array_equal(np.asarray(value), np.asarray(data[key]), equal_nan=True), (mode, key)
+        assert fields["iteration"].tolist() == iterations, mode
+        assert np.allclose(fields["time_s"], reference["time"][iterations])
+        assert np.allclose(fields["pressure_MPa"], reference["pressure_MPa"][iterations])
+        assert fields["sigma_MPa"].shape == (len(iterations), 3, 8, 6)
+        assert np.array_equal(fields["sigma_MPa"][-1], model.sigma_total)
+        assert np.array_equal(fields["strain"][-1], model.strain_total)
+        assert np.allclose(fields["R_edges_mm"][:, 0], reference["Rin_mm"][iterations])
+
+    # La deformation cumulee part de l'etat fabrique : nulle sans pre-etirement ni pression.
+    idle, _ = Base.run_blocked_actuation(eps=0.0, n_cycles=1, n_layers=2, n_phi=4, dt=1.0, Pmax=0.0)
+    assert np.allclose(idle.strain_total, 0.0, atol=1e-12)
+    try:
+        Base.FieldExport("every_n", 0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("every_n = 0 doit etre refuse")
+
+    rows = list(csv.DictReader(StringIO(Base.fields_to_csv_text(fields)), delimiter=";"))
+    assert tuple(rows[0]) == Base.FIELD_CSV_COLUMNS
+    assert len(rows) == 3 * 8
+    x, y, r, gamma_half = (np.array([float(row[k]) for row in rows]) for k in ("x", "y", "r", "epsilon_sphi"))
+    assert np.allclose(np.hypot(x, y), r, rtol=1e-7)
+    assert np.allclose(gamma_half, 0.5 * fields["strain"][-1, :, :, 5].reshape(-1), rtol=1e-7, atol=1e-12)
+    assert all(row["z"] == "0" and row["iteration"] == str(last) for row in rows)
+
+
 def test_force_unit_inference() -> None:
     """Item 2.1 de l'audit : inférence d'unité par mots entiers, plus par sous-chaîne."""
     assert pression.infer_force_unit("column1") == "N"
@@ -1155,6 +1199,7 @@ def main() -> None:
         test_temporal_plot_display_options,
         test_combined_experiment_overlay_plot,
         test_result_csv_exports,
+        test_field_export,
         test_force_unit_inference,
         test_theta_zero_rejected,
         test_series_lock_reference_at_zero_pressure,

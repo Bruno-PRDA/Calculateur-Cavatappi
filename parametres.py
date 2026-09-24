@@ -68,7 +68,7 @@ RESULT_CACHE_PATHS = (
     SUSPENDED_RESULT_PATH,
     HYSTERESIS_RESULT_PATH,
 )
-SETTINGS_SCHEMA_VERSION = 18
+SETTINGS_SCHEMA_VERSION = 19
 SETTINGS_EXPORT_FORMAT = "cavatappi-alpha-v2-settings"
 
 INTEGRATION_OPTIONS = ["exponential", "paper_explicit"]
@@ -94,6 +94,8 @@ PRESSURE_INPUT_OPTIONS = ["generated", "measured_csv"]
 # grip_to_grip = eps sur la longueur entre mors (spire + extremites), la
 # compatibilite serie etant resolue pendant l'etirement.
 PRESTRETCH_CONVENTION_OPTIONS = ["coil_only", "grip_to_grip"]
+# Memes valeurs que Base.FIELD_EXPORT_MODES.
+FIELD_EXPORT_OPTIONS = ["none", "every", "every_n", "final"]
 
 INTEGRATION_LABELS = {
     "paper_explicit": "Euler explicite",
@@ -140,6 +142,23 @@ PRESSURE_INPUT_LABELS = {
 PRESTRETCH_CONVENTION_LABELS = {
     "coil_only": "Sur la spire seule (défaut historique)",
     "grip_to_grip": "Sur la longueur entre mors (extrémités en série)",
+}
+FIELD_EXPORT_LABELS = {
+    "none": "Désactivé",
+    "every": "À chaque itération Δt",
+    "every_n": "Toutes les n itérations Δt",
+    "final": "Uniquement à l’instant final t_final",
+}
+# Composantes de Base.FIELD_COMPONENTS : (libellé, unité).
+FIELD_COMPONENT_LABELS = {
+    "sigma_ss": ("σ_ss, contrainte longitudinale", "MPa"),
+    "sigma_phiphi": ("σ_φφ, contrainte circonférentielle", "MPa"),
+    "sigma_rr": ("σ_rr, contrainte radiale", "MPa"),
+    "sigma_sphi": ("σ_sφ, contrainte de cisaillement", "MPa"),
+    "epsilon_ss": ("ε_ss, déformation longitudinale", "–"),
+    "epsilon_phiphi": ("ε_φφ, déformation circonférentielle", "–"),
+    "epsilon_rr": ("ε_rr, déformation radiale", "–"),
+    "epsilon_sphi": ("ε_sφ, déformation de cisaillement (γ/2)", "–"),
 }
 # Alpha V4 : cles des mecanismes physiques optionnels (tous off par defaut).
 V4_MECHANISM_KEYS = (
@@ -237,6 +256,9 @@ DEFAULT_SETTINGS: dict[str, SettingValue] = {
     "eyring_sigma_star_mpa": 0.0,
     "anchor_creep_c_mm": 0.0,
     "anchor_creep_t0_s": 10.0,
+    # Schema 19 : export des champs sigma / epsilon (off par defaut)
+    "field_export_mode": "none",
+    "field_export_every_n": 10,
 }
 
 
@@ -470,6 +492,7 @@ def normalize_settings(saved: dict[str, Any]) -> dict[str, SettingValue]:
         "eyring_sigma_star_mpa": (0.0, 1000.0),
         "anchor_creep_c_mm": (0.0, 50.0),
         "anchor_creep_t0_s": (0.01, 100000.0),
+        "field_export_every_n": (1.0, 1.0e6),
     }
     for key, (lower, upper) in bounded_values.items():
         value = float(settings[key])
@@ -486,6 +509,7 @@ def normalize_settings(saved: dict[str, Any]) -> dict[str, SettingValue]:
         ("poisson_pairing", POISSON_PAIRING_OPTIONS),
         ("pressure_input_mode", PRESSURE_INPUT_OPTIONS),
         ("prestretch_convention", PRESTRETCH_CONVENTION_OPTIONS),
+        ("field_export_mode", FIELD_EXPORT_OPTIONS),
     ):
         if str(settings[key]) not in options:
             raise ValueError(f"Option inconnue pour '{key}'.")
@@ -645,6 +669,8 @@ def load_settings() -> dict[str, SettingValue]:
             saved.setdefault(key, DEFAULT_SETTINGS[key])
         # Schema 18 : vitesse de pression (MPa/s) a la place de debit/volume.
         _migrate_flow_to_pressure_rate(saved)
+        # Schema 19 : cles field_export_* ajoutees, export off par defaut
+        # (fusion avec DEFAULT_SETTINGS dans normalize_settings).
         saved["_settings_schema_version"] = SETTINGS_SCHEMA_VERSION
 
     try:
