@@ -2,6 +2,8 @@
 
 Ce dossier contient tout le nécessaire pour lancer l'interface Streamlit du modèle Cavatappi.
 
+Dépôt : https://github.com/Bruno-PRDA/Calculateur-Cavatappi
+
 Alpha V4 = alpha V3 + cinq mécanismes physiques optionnels et un outil
 d'identification, tous **off par défaut** (moteur bit-identique à l'alpha V3
 sinon) — voir la section « Alpha V4 » plus bas et `PATCH_NOTES.md`.
@@ -33,7 +35,8 @@ les écarts réels entre le logiciel et les articles.
 
 ## Installation sur un PC Windows
 
-1. Copier tout le dossier `alpha V3` sur le PC.
+1. Copier tout le dossier `alpha V4` sur le PC, ou cloner le dépôt
+   (`git clone https://github.com/Bruno-PRDA/Calculateur-Cavatappi.git`).
 2. Installer Python si nécessaire.
 3. Double-cliquer sur `installer_dependances.bat`.
 4. Double-cliquer sur `lancer_interface.bat`.
