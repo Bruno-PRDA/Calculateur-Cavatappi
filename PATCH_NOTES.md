@@ -1,5 +1,34 @@
 # Notes de version
 
+## 2026.09.25 — Grilles de temps sans quasi-doublon (moteur `2026.09.25-v4-18`)
+
+- Défaut corrigé, présent au moins depuis v4-16. Les grilles de temps
+  générées fusionnaient les pas réguliers k·dt et les transitions k·T/2 avec
+  `np.unique`, qui ne retire que les doublons exacts. Deux instants à
+  ~1e-15 s l'un de l'autre survivaient, puis se confondaient une fois décalés
+  du temps de précontrainte : le calcul était refusé (« time must be
+  strictly increasing ») pour des réglages courants, par exemple dt 0,05 s et
+  P 0,8 MPa, soit 159 combinaisons sur 2 520 d'un balayage des réglages
+  usuels. Le recalage sur la durée totale créait en outre des doublons
+  exacts.
+- `Base.merge_time_grid` absorbe un pas régulier situé à moins de 1e-6·dt
+  d'un instant imposé (borne ou transition). Deux instants imposés ne sont
+  confondus que s'ils sont des doublons d'arrondi, sans regroupement en
+  chaîne, et les deux bornes sont toujours conservées. Elle remplace
+  `np.unique` dans les cinq générateurs : `cyclic_pressure_history`,
+  `ramp_hold_pressure_history`, `parametres.make_pressure_history` (durée
+  fixe), `parallel.pressure_rate_history` (hystérèse à vitesse imposée) et
+  `parametres.make_suspended_pressure_history` (masse suspendue, déplacée
+  d'`interface.py` pour être testable). La copie inutilisée
+  `interface.make_pressure_rate_history` est supprimée.
+- Sans quasi-doublon, la grille est inchangée au bit près : sur un balayage
+  de 45 876 grilles, seules celles qui en avaient un changent, et la
+  baseline de la figure 7 est inchangée. Les autres perdent leur point
+  fantôme (micro-pas de 1e-15 s à quelques ns) ; leurs résultats changent de
+  façon négligeable, d'où la nouvelle version du moteur (résultats en cache
+  à recalculer). Tests : 1 test ajouté (39 au total), qui couvre aussi
+  l'hystérèse à vitesse imposée et la masse suspendue.
+
 ## 2026.09.24 — Export des champs σ et ε (moteur `2026.09.24-v4-17`)
 
 - Le moteur cumule la déformation totale par couche et par division φ

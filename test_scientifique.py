@@ -473,6 +473,54 @@ def test_field_export() -> None:
     assert all(row["z"] == "0" and row["iteration"] == str(last) for row in rows)
 
 
+def test_time_grid_near_duplicates() -> None:
+    """Grilles générées : un pas régulier k*dt et une transition k*T/2 distants de
+    ~1e-15 s sont confondus. La grille reste strictement croissante une fois
+    décalée du temps de précontrainte, et les calculs autrefois refusés
+    (« time must be strictly increasing ») aboutissent."""
+    grid = Base.merge_time_grid(1.0, 0.1, [0.0, 0.1, 0.30000000000000004, 0.5, 0.9999999999999999], [0.3, 1.0])
+    assert grid.tolist() == [0.0, 0.1, 0.3, 0.5, 1.0], grid
+    refused_before = (
+        dict(dt=0.05, p_max_mpa=0.8, n_cycles=1),
+        dict(dt=0.7, p_max_mpa=0.77, pressure_rate_mpa_s=0.1, n_cycles=2),
+        dict(dt=0.1, p_max_mpa=1.5, pressure_rate_mpa_s=0.1, n_cycles=3, use_fixed_duration=True, duration_s=3.3),
+    )
+    for extra in refused_before:
+        settings = dict(parametres.DEFAULT_SETTINGS)
+        settings.update(n_layers=1, n_phi=4, pre_steps=2, **extra)
+        config = parametres.build_config(settings)
+        time, pressure = parametres.make_pressure_history(config)
+        if time is None:
+            time, pressure = Base.cyclic_pressure_history(
+                config.n_cycles, config.Pmax, dt=config.dt, nonlinear=config.nonlinear_pressure,
+                half_period_s=Base._config_half_period(config),
+            )
+        for shift in (0.0, 77.88, 1000.0):
+            assert np.all(np.diff(shift + time) > 0.0), (extra, shift)
+        _, data = Base.run_blocked_actuation(config, pressure_time=time, pressure_MPa=pressure)
+        assert len(data["time"]) == len(time) and np.isclose(np.max(data["pressure_MPa"]), np.max(pressure)), extra
+    _, peak = Base.cyclic_pressure_history(1, 0.8, dt=0.05, pressure_rate_mpa_s=1.5 / 9.0)
+    assert np.max(peak) == 0.8
+
+    # Autres générateurs : hystérèse à vitesse imposée (parallel.py) et masse suspendue.
+    import parallel
+
+    settings = dict(parametres.DEFAULT_SETTINGS)
+    settings.update(n_layers=1, n_phi=4, pre_steps=2, dt=0.05, p_max_mpa=0.6)
+    case = parallel.run_hysteresis_pressure_rate_case(settings, 0.05, 1)
+    assert len(case["data"]["time"]) > 2
+    settings.update(suspended_pressure_rate_mpa_s=0.05, suspended_duration_s=20.0, suspended_hold_pressure=True)
+    time, _, _ = parametres.make_suspended_pressure_history(parametres.build_config(settings), settings)
+    for shift in (0.0, 77.88, 1000.0):
+        assert np.all(np.diff(shift + time) > 0.0), shift
+
+    # Pas de regroupement en chaîne : des transitions espacées de moins de 1e-6*dt
+    # restent distinctes, et une durée très courte garde ses deux bornes.
+    chained = Base.merge_time_grid(1.0, 1.0, [0.0], [0.5 + k * 0.9e-6 for k in range(10)])
+    assert len(chained) == 12 and chained[0] == 0.0 and chained[-1] == 1.0
+    assert Base.merge_time_grid(1.0e-7, 1.0, [0.0]).tolist() == [0.0, 1.0e-7]
+
+
 def test_force_unit_inference() -> None:
     """Item 2.1 de l'audit : inférence d'unité par mots entiers, plus par sous-chaîne."""
     assert pression.infer_force_unit("column1") == "N"
@@ -1204,6 +1252,7 @@ def main() -> None:
         test_combined_experiment_overlay_plot,
         test_result_csv_exports,
         test_field_export,
+        test_time_grid_near_duplicates,
         test_force_unit_inference,
         test_theta_zero_rejected,
         test_series_lock_reference_at_zero_pressure,

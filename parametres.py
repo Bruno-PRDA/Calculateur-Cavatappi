@@ -1136,10 +1136,11 @@ def make_pressure_history(config: SimulationParams) -> tuple[np.ndarray | None, 
 
     period = cycle_period_seconds(config)
     half_period = 0.5 * period
+    from Base import merge_time_grid
+
     regular = np.arange(0.0, config.duration_s, config.dt, dtype=float)
     transitions = np.arange(0.0, config.duration_s + 0.5 * half_period, half_period, dtype=float)
-    t = np.unique(np.concatenate((regular, transitions, np.array([0.0, config.duration_s]))))
-    t = t[(t >= 0.0) & (t <= config.duration_s)]
+    t = merge_time_grid(config.duration_s, config.dt, regular, transitions)
     phase = (t % period) / period
     loading = phase < 0.5
     pressure = np.zeros_like(t)
@@ -1161,3 +1162,39 @@ def make_pressure_history(config: SimulationParams) -> tuple[np.ndarray | None, 
 
     pressure[np.isclose(t, config.duration_s, rtol=0.0, atol=1e-12)] = 0.0
     return t, np.clip(pressure, 0.0, config.Pmax)
+
+
+def make_suspended_pressure_history(config: SimulationParams, settings: dict[str, SettingValue]):
+    """Historique de pression de la masse suspendue : rampe à vitesse imposée,
+    puis maintien ou décharge symétrique. Déplacé d'interface.py pour être testable."""
+    from Base import merge_time_grid
+
+    duration = float(settings["suspended_duration_s"])
+    rate = float(settings["suspended_pressure_rate_mpa_s"])
+    if duration <= 0.0:
+        raise ValueError("La durée de simulation masse suspendue doit être positive.")
+    if rate <= 0.0:
+        raise ValueError("La vitesse d'actionnement masse suspendue doit être positive.")
+
+    ramp_time = config.Pmax / rate if config.Pmax > 0.0 else 0.0
+    transition_times = [0.0, duration, ramp_time]
+    if not bool(settings["suspended_hold_pressure"]):
+        transition_times.append(2.0 * ramp_time)
+
+    regular_time = np.arange(0.0, duration + config.dt, config.dt)
+    time_values = merge_time_grid(duration, config.dt, regular_time, transition_times)
+    if time_values.size < 2:
+        time_values = np.array([0.0, duration], dtype=float)
+
+    if bool(settings["suspended_hold_pressure"]):
+        pressure = np.minimum(rate * time_values, config.Pmax)
+    else:
+        pressure = np.where(
+            time_values <= ramp_time,
+            rate * time_values,
+            np.maximum(config.Pmax - rate * (time_values - ramp_time), 0.0),
+        )
+
+    pressure = np.clip(pressure, 0.0, config.Pmax)
+    hold_start_time = min(ramp_time, duration)
+    return time_values, pressure, hold_start_time

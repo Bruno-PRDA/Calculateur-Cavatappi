@@ -27,7 +27,7 @@ import numpy as np
 from scipy.optimize import brentq, least_squares, minimize_scalar
 
 
-MODEL_VERSION = "2026.09.24-v4-17"
+MODEL_VERSION = "2026.09.25-v4-18"
 
 # Exposants du profil de pression phenomenologique non lineaire (uniques pour
 # tout le projet ; parametres.make_pressure_history les importe aussi).
@@ -533,20 +533,51 @@ def _normalize_integration_name(integration: str) -> str:
     return normalized
 
 
+def merge_time_grid(total_time: float, dt: float, regular, events=()) -> np.ndarray:
+    """Grille strictement croissante sur [0, total_time] : pas reguliers et instants imposes.
+
+    np.unique ne retirait que les doublons exacts : un pas regulier k*dt et une
+    transition calculee autrement (k*T/2) pouvaient rester a 1e-15 s l'un de
+    l'autre, se confondre une fois decales du temps de precontrainte et faire
+    refuser le calcul (« time must be strictly increasing ») ; le recalage sur
+    total_time creait en outre des doublons exacts. Ici, un pas regulier a
+    moins de 1e-6*dt d'un instant impose (borne 0 ou total_time, transition)
+    est absorbe par celui-ci ; deux instants imposes ne sont confondus que
+    s'ils sont des doublons d'arrondi (< 1e-12 relatif). Aucun regroupement en
+    chaine n'est possible et les deux bornes sont toujours conservees. Sans
+    quasi-doublon, la grille est celle de np.unique.
+    """
+    total_time = float(total_time)
+    dt = float(dt)
+    if not (np.isfinite(total_time) and np.isfinite(dt)) or total_time < 0.0 or dt <= 0.0:
+        raise ValueError("total_time must be finite and non-negative and dt must be finite and positive.")
+
+    def inside(values) -> np.ndarray:
+        values = np.asarray(values, dtype=float).ravel()
+        return values[np.isfinite(values) & (values >= 0.0) & (values <= total_time)]
+
+    rounding = min(1.0e-6 * dt, 1.0e-12 * max(1.0, total_time))
+    events = np.sort(inside(list(events)))
+    events = events[(events > rounding) & (events < total_time - rounding)]
+    if events.size:
+        events = events[np.concatenate(([True], np.diff(events) > rounding))]
+    imposed = np.union1d(np.unique(np.array([0.0, total_time])), events)
+    regular = np.unique(inside(regular))
+    if regular.size:
+        idx = np.clip(np.searchsorted(imposed, regular), 1, max(1, imposed.size - 1))
+        nearest = np.minimum(
+            np.abs(regular - imposed[np.maximum(idx - 1, 0)]),
+            np.abs(regular - imposed[np.minimum(idx, imposed.size - 1)]),
+        )
+        regular = regular[nearest > 1.0e-6 * dt]
+    return np.union1d(imposed, regular)
+
+
 def _time_grid_with_events(total_time: float, dt: float, events=()) -> np.ndarray:
     """Return a bounded grid containing the requested physical transitions."""
     if total_time < 0.0 or dt <= 0.0:
         raise ValueError("total_time must be non-negative and dt must be positive.")
-    regular = np.arange(0.0, total_time, dt, dtype=float)
-    values = [regular, np.array([0.0, total_time], dtype=float)]
-    physical_events = np.asarray(list(events), dtype=float)
-    if physical_events.size:
-        physical_events = physical_events[np.isfinite(physical_events)]
-        physical_events = physical_events[(physical_events >= 0.0) & (physical_events <= total_time)]
-        values.append(physical_events)
-    grid = np.unique(np.concatenate(values))
-    grid[np.isclose(grid, total_time, rtol=0.0, atol=1e-12)] = total_time
-    return grid[(grid >= 0.0) & (grid <= total_time)]
+    return merge_time_grid(total_time, dt, np.arange(0.0, total_time, dt, dtype=float), events)
 
 
 # ---------------------------------------------------------------------------

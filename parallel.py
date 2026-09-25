@@ -41,8 +41,7 @@ def pressure_rate_history(config, rate_mpa_s: float, n_cycles_for_history: int):
     total_time = max(1, int(n_cycles_for_history)) * period
     regular_time = np.arange(0.0, total_time + config.dt, config.dt)
     transition_time = np.arange(0.0, total_time + half_period, half_period)
-    time_values = np.unique(np.concatenate((regular_time, transition_time, [total_time])))
-    time_values = time_values[(time_values >= 0.0) & (time_values <= total_time)]
+    time_values = modele.merge_time_grid(total_time, config.dt, regular_time, transition_time)
 
     phase = (time_values % period) / period
     pressure = np.empty_like(time_values)

@@ -81,6 +81,7 @@ from parametres import (
     load_result_cache,
     load_settings,
     make_pressure_history,
+    make_suspended_pressure_history,
     normalize_settings,
     option_index,
     parse_settings_export,
@@ -562,29 +563,6 @@ def stale_result_message(stored_result: dict, action: str) -> str:
     return f"Les paramètres ont changé depuis le dernier calcul. Veuillez relancer {action}."
 
 
-def make_pressure_rate_history(config, rate_mpa_s: float, n_cycles_for_history: int):
-    if rate_mpa_s <= 0.0:
-        raise ValueError("La vitesse de pression doit être positive.")
-    if config.Pmax <= 0.0:
-        raise ValueError("La pression maximale doit être positive.")
-
-    half_period = config.Pmax / rate_mpa_s
-    period = 2.0 * half_period
-    total_time = max(1, int(n_cycles_for_history)) * period
-    regular_time = np.arange(0.0, total_time + config.dt, config.dt)
-    transition_time = np.arange(0.0, total_time + half_period, half_period)
-    time_values = np.unique(np.concatenate((regular_time, transition_time, [total_time])))
-    time_values = time_values[(time_values >= 0.0) & (time_values <= total_time)]
-
-    phase = (time_values % period) / period
-    pressure = np.empty_like(time_values)
-    loading = phase <= 0.5
-    pressure[loading] = config.Pmax * (phase[loading] / 0.5)
-    pressure[~loading] = config.Pmax * (1.0 - (phase[~loading] - 0.5) / 0.5)
-    pressure[np.isclose(time_values, total_time)] = 0.0
-    return time_values, np.clip(pressure, 0.0, config.Pmax), period
-
-
 def apply_view_query_params(settings: dict[str, SettingValue]) -> dict[str, SettingValue]:
     for key, lower, upper in (
         ("view_elev_deg", 0.0, 90.0),
@@ -699,39 +677,6 @@ def run_relaxation_model(settings: dict[str, SettingValue]):
     data["force_hold_relax_mN"] = data["force_total_mN"] - data["force_total_mN"][hold_start_index]
     data["torque_hold_relax_microNm"] = data["torque_act_microNm"] - data["torque_act_microNm"][hold_start_index]
     return config, data, modele.summary(data)
-
-
-def make_suspended_pressure_history(config, settings: dict[str, SettingValue]):
-    duration = float(settings["suspended_duration_s"])
-    rate = float(settings["suspended_pressure_rate_mpa_s"])
-    if duration <= 0.0:
-        raise ValueError("La durée de simulation masse suspendue doit être positive.")
-    if rate <= 0.0:
-        raise ValueError("La vitesse d'actionnement masse suspendue doit être positive.")
-
-    ramp_time = config.Pmax / rate if config.Pmax > 0.0 else 0.0
-    transition_times = [0.0, duration, ramp_time]
-    if not bool(settings["suspended_hold_pressure"]):
-        transition_times.append(2.0 * ramp_time)
-
-    regular_time = np.arange(0.0, duration + config.dt, config.dt)
-    time_values = np.unique(np.concatenate((regular_time, np.asarray(transition_times, dtype=float))))
-    time_values = time_values[(time_values >= 0.0) & (time_values <= duration)]
-    if time_values.size < 2:
-        time_values = np.array([0.0, duration], dtype=float)
-
-    if bool(settings["suspended_hold_pressure"]):
-        pressure = np.minimum(rate * time_values, config.Pmax)
-    else:
-        pressure = np.where(
-            time_values <= ramp_time,
-            rate * time_values,
-            np.maximum(config.Pmax - rate * (time_values - ramp_time), 0.0),
-        )
-
-    pressure = np.clip(pressure, 0.0, config.Pmax)
-    hold_start_time = min(ramp_time, duration)
-    return time_values, pressure, hold_start_time
 
 
 def run_suspended_model(settings: dict[str, SettingValue]):
