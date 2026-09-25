@@ -433,8 +433,12 @@ Dans `Pression et actionnement`, choisissez `Historique pression/temps mesuré
 (CSV)`, puis chargez un fichier contenant une colonne de temps et une colonne
 de pression. Les unités `MPa`, `bar`, `kPa` et `psi` sont prises en charge. Les
 temps irréguliers sont conservés : aucune rampe de pression n'est reconstruite.
-L'option de zéro initial soustrait uniquement l'offset du capteur au premier
-échantillon.
+Les lignes sont triées par temps. Une ligne à moins d'une nanoseconde de la
+dernière ligne gardée désigne le même instant et elle est écartée : entre deux
+lignes de même temps, c'est la première du fichier qui compte. Le fichier doit
+garder au moins deux instants distincts. L'option de zéro initial soustrait
+uniquement l'offset du capteur au premier échantillon gardé. Un résultat
+enregistré n'est repris que si l'historique lu dans le CSV est celui du calcul.
 
 ## Condition du nylon
 

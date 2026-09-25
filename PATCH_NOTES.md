@@ -1,5 +1,35 @@
 # Notes de version
 
+## 2026.09.25 — CSV mesurés : temps quasi identiques confondus (lecture des CSV)
+
+- Défaut corrigé, antérieur à l'export des champs. `np.unique` ne retirait
+  que les doublons exacts. Deux instants d'un CSV de pression mesurée
+  distants de moins d'environ 1e-14 s, par exemple 0.3 et
+  0.30000000000000004 écrits par un script qui calcule 0,1 × 3, se
+  confondaient une fois décalés du temps de précontrainte : l'actionnement
+  bloqué était refusé (« time must be strictly increasing »). Entre 1e-14 s
+  et 1 ns, le calcul aboutissait avec un micro-pas.
+- `pression.distinct_time_indices` écarte, dans une série de temps triée,
+  tout échantillon à moins de 1 ns (`DUPLICATE_TIME_TOLERANCE_S`) du dernier
+  échantillon gardé, sans regroupement en chaîne ; entre deux lignes de même
+  temps, la première du fichier est gardée, comme avant. Elle remplace
+  `np.unique` dans les deux lecteurs, pression mesurée et essai expérimental
+  (tolérance convertie quand le temps est en ms). Un fichier qui ne garde
+  qu'un seul instant distinct est refusé dès la lecture, au lieu d'un échec
+  du calcul avec le message anglais du moteur.
+- Un fichier sans quasi-doublon donne un résultat identique au bit près :
+  4 000 fichiers aléatoires comparés, doublons exacts, désordre et origine
+  de 1,7e9 s compris. Moteur inchangé.
+- Cache : le résultat de l'actionnement bloqué enregistre l'empreinte de
+  l'historique de pression lu (`pressure_history_digest`). En CSV mesuré, il
+  n'est repris que si l'historique lu aujourd'hui est le même, et jamais
+  pour un fichier chargé mais refusé à la lecture ; l'empreinte du fichier
+  seule ne suffisait pas, puisqu'un même fichier peut désormais être lu
+  autrement. Un résultat obtenu sur un CSV mesuré avant cette version est
+  donc à relancer une fois, et l'avertissement le dit. Sans fichier chargé,
+  le dernier résultat reste affiché comme avant. Tests : 1 test ajouté
+  (40 au total).
+
 ## 2026.09.25 — Barre latérale : changements consécutifs conservés (interface)
 
 - Défaut corrigé, antérieur à l'export des champs. Quand on changeait deux

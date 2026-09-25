@@ -77,6 +77,34 @@ def infer_time_unit(header: str) -> str:
     return "s"
 
 
+# Deux mesures a moins d'une nanoseconde l'une de l'autre sont le meme instant :
+# aucun capteur de pression ou de force n'echantillonne a 1 GHz.
+DUPLICATE_TIME_TOLERANCE_S = 1.0e-9
+
+
+def distinct_time_indices(time_sorted: np.ndarray, tolerance: float) -> np.ndarray:
+    """Indices des echantillons conserves d'une serie de temps triee.
+
+    Un echantillon a moins de `tolerance` du dernier echantillon conserve est
+    un doublon : seul le premier est garde. np.unique ne retirait que les
+    doublons exacts ; deux temps a 1e-16 s (0.3 et 0.1 * 3) survivaient, se
+    confondaient une fois decales du temps de precontrainte et faisaient
+    refuser le calcul (« time must be strictly increasing »).
+    """
+    time_sorted = np.asarray(time_sorted, dtype=float)
+    close = np.flatnonzero(np.diff(time_sorted) < tolerance) + 1
+    keep = np.ones(time_sorted.size, dtype=bool)
+    anchor = 0
+    for index in close:
+        # Un echantillon eloigne de son predecesseur est toujours conserve ;
+        # seuls les candidats sont compares au dernier echantillon conserve.
+        if keep[index - 1]:
+            anchor = index - 1
+        if time_sorted[index] - time_sorted[anchor] < tolerance:
+            keep[index] = False
+    return np.flatnonzero(keep)
+
+
 def experimental_force_pressure_payload(
     columns: dict[str, np.ndarray],
     time_column: str,
@@ -97,20 +125,22 @@ def experimental_force_pressure_payload(
     if len(time_values) < 2:
         raise ValueError("Le CSV ne contient pas assez de mesures temps/pression/force valides.")
 
-    order = np.argsort(time_values, kind="stable")
-    time_values = time_values[order]
-    pressure_values = pressure_values[order]
-    force_values = force_values[order]
-    unique_time, unique_index = np.unique(time_values, return_index=True)
-    time_values = unique_time
-    pressure_values = pressure_values[unique_index]
-    force_values = force_values[unique_index]
-
     time_factors = {"s": 1.0, "ms": 1.0e-3}
     pressure_factors = {"MPa": 1.0, "bar": 0.1, "kPa": 0.001, "psi": 0.006894757293168361}
     force_factors = {"mN": 1.0, "N": 1000.0, "g": 9.80665, "kg": 9806.65}
     if time_unit not in time_factors or pressure_unit not in pressure_factors or force_unit not in force_factors:
         raise ValueError("Une unité sélectionnée pour l'essai expérimental est inconnue.")
+
+    order = np.argsort(time_values, kind="stable")
+    time_values = time_values[order]
+    pressure_values = pressure_values[order]
+    force_values = force_values[order]
+    unique_index = distinct_time_indices(time_values, DUPLICATE_TIME_TOLERANCE_S / time_factors[time_unit])
+    if unique_index.size < 2:
+        raise ValueError("Le CSV doit contenir au moins deux instants distincts.")
+    time_values = time_values[unique_index]
+    pressure_values = pressure_values[unique_index]
+    force_values = force_values[unique_index]
 
     payload = {
         "time": time_factors[time_unit] * (time_values - time_values[0]),
@@ -140,9 +170,11 @@ def measured_pressure_payload(
     order = np.argsort(time_values, kind="stable")
     time_values = time_values[order]
     pressure_values = pressure_values[order]
-    unique_time, unique_index = np.unique(time_values, return_index=True)
+    unique_index = distinct_time_indices(time_values, DUPLICATE_TIME_TOLERANCE_S)
+    if unique_index.size < 2:
+        raise ValueError("Le CSV doit contenir au moins deux instants distincts.")
     pressure_values = pressure_values[unique_index]
-    time_values = unique_time - unique_time[0]
+    time_values = time_values[unique_index] - time_values[0]
     factors = {"MPa": 1.0, "bar": 0.1, "kPa": 0.001, "psi": 0.006894757293168361}
     pressure_mpa = pressure_values * factors[unit]
     if subtract_initial:

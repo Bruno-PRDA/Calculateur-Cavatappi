@@ -552,14 +552,40 @@ def result_matches_settings(
     return False
 
 
-def stale_result_message(stored_result: dict, action: str) -> str:
-    """Avertissement d'un résultat enregistré périmé : autre version du moteur ou réglages modifiés."""
+def pressure_history_digest(history) -> str:
+    """Empreinte de l'historique de pression réellement lu (temps et pressions)."""
+    digest = hashlib.sha256()
+    for key in ("time", "pressure_MPa"):
+        digest.update(np.ascontiguousarray(history[key], dtype=float).tobytes())
+    return digest.hexdigest()
+
+
+def measured_history_matches(result: dict | None, measured_history) -> bool:
+    """Un résultat calculé sur un CSV mesuré n'est repris que pour l'historique
+    qui l'a produit. L'empreinte du fichier ne suffit pas : un même fichier peut
+    être lu autrement (temps quasi identiques confondus depuis le 25/09/2026).
+    Sans fichier chargé, rien n'est comparé."""
+    if not isinstance(result, dict) or measured_history is None:
+        return True
+    return result.get("pressure_history_digest") == pressure_history_digest(measured_history)
+
+
+def stale_result_message(stored_result: dict, action: str, history_changed: bool = False) -> str:
+    """Avertissement d'un résultat enregistré périmé : autre version du moteur,
+    historique de pression lu autrement ou réglages modifiés."""
     try:
         name, version = stored_result.get("signature")[0]
     except (TypeError, ValueError, IndexError, KeyError, AttributeError):
         name, version = None, None
     if name == "_model_version" and version != str(modele.MODEL_VERSION):
         return f"Ce résultat a été calculé par une autre version du moteur ({version}). Veuillez relancer {action}."
+    if history_changed and stored_result.get("pressure_history_digest") is None:
+        return (
+            "Ce résultat a été enregistré par une version antérieure, sans l'empreinte de l'historique "
+            f"de pression lu dans le CSV. Veuillez relancer {action}."
+        )
+    if history_changed:
+        return f"L'historique de pression lu dans le CSV ne correspond pas au dernier calcul enregistré. Veuillez relancer {action}."
     return f"Les paramètres ont changé depuis le dernier calcul. Veuillez relancer {action}."
 
 
@@ -1029,6 +1055,7 @@ with st.sidebar.expander("Géométrie", expanded=False):
     )
 
 uploaded_pressure_payload = None
+measured_pressure_file_loaded = False
 measured_pressure_time_column = str(settings.get("measured_pressure_time_column", ""))
 measured_pressure_column = str(settings.get("measured_pressure_column", ""))
 measured_pressure_unit = str(settings.get("measured_pressure_unit", "MPa"))
@@ -1117,6 +1144,7 @@ with st.sidebar.expander("Pression et actionnement", expanded=True):
             help="Le fichier doit contenir une colonne de temps et une colonne de pression.",
         )
         if uploaded_pressure_file is not None:
+            measured_pressure_file_loaded = True
             raw_pressure_file = uploaded_pressure_file.getvalue()
             measured_pressure_file_hash = hashlib.sha256(raw_pressure_file).hexdigest()
             try:
@@ -1907,8 +1935,23 @@ if run_blocked_now:
         "estimated_s": estimated_compute_s,
         "settings": dict(current_settings),
         "signature": blocked_result_signature,
+        "pressure_history_digest": (
+            None if uploaded_pressure_payload is None else pressure_history_digest(uploaded_pressure_payload)
+        ),
     }
     save_result_cache(BLOCKED_RESULT_PATH, st.session_state["calculator_result"])
+
+# Résultat bloqué repris dans les onglets Sortie modèle, Courbes temporelles et
+# Hystérèse : mêmes réglages et, en CSV mesuré, même historique lu. Un fichier
+# chargé mais refusé par la lecture ne reprend pas le résultat enregistré.
+blocked_settings_match = result_matches_settings(
+    st.session_state["calculator_result"], blocked_result_signature, BLOCKED_RESULT_IGNORE_KEYS
+)
+blocked_result_current = (
+    blocked_settings_match
+    and not (measured_pressure_file_loaded and uploaded_pressure_payload is None)
+    and measured_history_matches(st.session_state["calculator_result"], uploaded_pressure_payload)
+)
 
 left, right = st.columns([1.3, 1.2], gap="large")
 
@@ -1981,12 +2024,18 @@ with tabs[0]:
             st.warning("Les réglages du solveur sont trop lourds pour l'interface interactive.")
 
     stored_result = st.session_state["calculator_result"]
-    result = stored_result if result_matches_settings(stored_result, blocked_result_signature, BLOCKED_RESULT_IGNORE_KEYS) else None
+    result = stored_result if blocked_result_current else None
     if result is None:
         if stored_result is None:
             st.info("Utilisez le bouton de calcul situé au-dessus du visualiseur pour lancer le modèle.")
         else:
-            st.warning(stale_result_message(stored_result, "l'actionnement bloqué pour mettre les résultats à jour"))
+            st.warning(
+                stale_result_message(
+                    stored_result,
+                    "l'actionnement bloqué pour mettre les résultats à jour",
+                    history_changed=blocked_settings_match,
+                )
+            )
     else:
         summary = result["summary"]
         data = result["data"]
@@ -2041,12 +2090,18 @@ with tabs[0]:
 with tabs[1]:
     temporal_csv_payload = None
     stored_result = st.session_state["calculator_result"]
-    result = stored_result if result_matches_settings(stored_result, blocked_result_signature, BLOCKED_RESULT_IGNORE_KEYS) else None
+    result = stored_result if blocked_result_current else None
     if result is None:
         if stored_result is None:
             st.info("Veuillez d'abord lancer le modèle dans l'onglet 'Sortie modèle' pour afficher les courbes temporelles.")
         else:
-            st.warning(stale_result_message(stored_result, "l'actionnement bloqué pour mettre les courbes à jour"))
+            st.warning(
+                stale_result_message(
+                    stored_result,
+                    "l'actionnement bloqué pour mettre les courbes à jour",
+                    history_changed=blocked_settings_match,
+                )
+            )
     else:
         # Le graphe est rempli APRÈS le volet expérimental : si un essai est
         # chargé et que la pression injectée est l'historique mesuré, la
@@ -2263,12 +2318,18 @@ with tabs[2]:
     st.caption(f"Cycles sélectionnés : {', '.join(str(cycle) for cycle in selected_hysteresis_cycles)}.")
     if hysteresis_compare_mode == "current":
         stored_result = st.session_state["calculator_result"]
-        result = stored_result if result_matches_settings(stored_result, blocked_result_signature, BLOCKED_RESULT_IGNORE_KEYS) else None
+        result = stored_result if blocked_result_current else None
         if result is None:
             if stored_result is None:
                 st.info("Veuillez d'abord lancer le modèle dans l'onglet 'Sortie modèle' pour afficher l'hystérèse.")
             else:
-                st.warning(stale_result_message(stored_result, "l'actionnement bloqué pour mettre l'hystérèse à jour"))
+                st.warning(
+                    stale_result_message(
+                        stored_result,
+                        "l'actionnement bloqué pour mettre l'hystérèse à jour",
+                        history_changed=blocked_settings_match,
+                    )
+                )
         else:
             try:
                 config = result["config"]

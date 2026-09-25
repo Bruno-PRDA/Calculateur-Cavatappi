@@ -344,6 +344,45 @@ def test_experimental_force_pressure_csv() -> None:
     affichage.plt.close(figure)
 
 
+def test_measured_csv_near_duplicate_times() -> None:
+    """CSV mesurés : une ligne à moins d'une nanoseconde de la dernière ligne
+    gardée (0.1 * 3 après 0.3, à 5.6e-17 s) est le même instant et elle est
+    écartée, sans regroupement en chaîne. Le calcul autrefois refusé (« time
+    must be strictly increasing ») aboutit, et un fichier réduit à un seul
+    instant est refusé dès la lecture."""
+    times = [0.0, 0.1, 0.2, 0.1 * 3, 0.3, 0.4, 0.4 + 0.6e-9, 0.4 + 1.2e-9, 0.5, 0.5, 0.6]
+    lines = ["temps (s);pression (MPa)"] + [f"{t!r};{0.1 * k!r}" for k, t in enumerate(times)]
+    columns = pression.parse_uploaded_numeric_csv("\n".join(lines).encode("utf-8"))
+    payload = pression.measured_pressure_payload(columns, "temps (s)", "pression (MPa)", "MPa", subtract_initial=False)
+    assert payload["time"].tolist() == [0.0, 0.1, 0.2, 0.3, 0.4, 0.4 + 1.2e-9, 0.5, 0.6], payload["time"]
+    assert np.allclose(payload["pressure_MPa"], [0.0, 0.1, 0.2, 0.4, 0.5, 0.7, 0.8, 1.0])
+    single = pression.parse_uploaded_numeric_csv(b"temps (s);pression (MPa)\n0.3;0.1\n0.30000000000000004;0.2\n")
+    try:
+        pression.measured_pressure_payload(single, "temps (s)", "pression (MPa)", "MPa", subtract_initial=False)
+    except ValueError as exc:
+        assert "deux instants distincts" in str(exc)
+    else:
+        raise AssertionError("Un CSV réduit à un seul instant aurait dû être refusé.")
+    for shift in (0.0, 77.88, 1000.0, 1.0e5):
+        assert np.all(np.diff(shift + payload["time"]) > 0.0), shift
+    settings = dict(parametres.DEFAULT_SETTINGS)
+    settings.update(n_layers=1, n_phi=4, pre_steps=2)
+    _, data = Base.run_blocked_actuation(
+        parametres.build_config(settings),
+        pressure_time=payload["time"],
+        pressure_MPa=payload["pressure_MPa"],
+    )
+    assert len(data["time"]) == len(payload["time"])
+
+    # Essai expérimental en ms : la tolérance reste d'une nanoseconde.
+    raw = "time_ms,pressure_MPa,force_mN\n0.0,0.0,500.0\n1e-7,0.1,510.0\n1.0,0.2,520.0\n2.0,0.3,530.0\n"
+    columns = pression.parse_uploaded_numeric_csv(raw.encode("utf-8"))
+    payload = pression.experimental_force_pressure_payload(
+        columns, "time_ms", "pressure_MPa", "force_mN", "MPa", "mN", time_unit="ms"
+    )
+    assert np.allclose(payload["time"], [0.0, 1.0e-3, 2.0e-3]) and np.allclose(payload["force_mN"], [500.0, 520.0, 530.0])
+
+
 def test_temporal_plot_display_options() -> None:
     data = {
         "time": np.array([0.0, 1.0, 2.0]),
@@ -1248,6 +1287,7 @@ def main() -> None:
         test_fixed_constitutive_prestrain_and_nylon_modes,
         test_measured_pressure_csv,
         test_experimental_force_pressure_csv,
+        test_measured_csv_near_duplicate_times,
         test_temporal_plot_display_options,
         test_combined_experiment_overlay_plot,
         test_result_csv_exports,
