@@ -1,5 +1,55 @@
 # Notes de version
 
+## 2026.09.25 — Stockage des réglages et calcul parallèle (interface)
+
+Défauts antérieurs à l'export des champs, relevés par la vérification du
+24/09 (n° 3 à 7).
+
+- Calcul parallèle. Sous Windows, multiprocessing ré-importe le script
+  principal dans chaque worker de l'étude de précontrainte et de la
+  comparaison d'hystérèse : chacun ré-exécutait toute la page (lecture et
+  écriture des réglages, caches, figures). Le code de page est désormais dans
+  `main()`, appelée seulement quand `interface.py` est le module principal,
+  comme sous `streamlit run` ; les workers n'importent plus que les
+  fonctions. Sur une étude à 2 workers : 2 ré-exécutions de la page avant,
+  aucune après.
+- Sonde d'écriture du dossier de stockage. Son nom était fixe
+  (`.write_test`) : deux processus lancés ensemble se la supprimaient et l'un
+  d'eux choisissait à tort un autre dossier que `CAVATAPPI_DATA_DIR` ou
+  `%LOCALAPPDATA%` (6 processus sur 144 dans un essai de 24 lancements
+  simultanés). La sonde a maintenant un nom unique, créé en mode exclusif :
+  aucun sur 144, et un dossier existant mais interdit en écriture est
+  toujours abandonné aussitôt pour le suivant.
+- Réglages invalides. Une seule valeur invalide dans le fichier enregistré
+  (option inconnue, null, hors bornes) remettait silencieusement TOUS les
+  réglages aux défauts, et l'interface réécrivait aussitôt le fichier.
+  Seules les valeurs refusées reprennent maintenant leur défaut
+  (`load_settings_with_report`). Les valeurs invalides en elles-mêmes sont
+  écartées d'abord ; si les autres se contredisent (Rin < Rout, rho0 > Rout…),
+  une seule valeur est écartée quand cela suffit, sinon la reprise se fait
+  clé par clé. Un avertissement nomme à part les réglages invalides et les
+  réglages incompatibles pendant la session, et l'ancien fichier est copié
+  en `cavatappi_alpha_v2_settings.invalide.json`. Un fichier illisible
+  (JSON invalide, entier démesuré, imbrication trop profonde) est lui aussi
+  copié et signalé. Un numéro de schéma illisible n'entraîne plus la
+  migration historique, qui remettait sans le dire des options aux défauts ;
+  un P_max invalide dans un ancien fichier débit/volume garde la
+  demi-période 60·V/Q.
+- Import d'un JSON avec null. Une valeur null, une liste, Infinity ou un
+  entier démesuré faisait planter la page (TypeError, OverflowError) au lieu
+  d'afficher « Import impossible » : `_coerce_setting` les refuse avec un
+  message qui nomme le réglage.
+- Réinitialisation. « Réinitialiser les paramètres » faisait réapparaître
+  l'ancien résultat du dossier temporaire historique, recopié à chaque
+  lecture puisque la destination n'existait plus. La recopie n'a lieu
+  qu'une fois, sur un dossier de stockage encore sans fichier de réglages,
+  et un marqueur (`.recopie_dossier_temporaire_faite`) la retient.
+- README : section « Cache des réglages » mise à jour (emplacement réel,
+  `CAVATAPPI_DATA_DIR`, replis, recopie unique, réglages invalides, nom du
+  bouton).
+- Moteur inchangé ; rendu de l'interface par défaut identique. Tests :
+  1 test ajouté (41 au total).
+
 ## 2026.09.25 — Aller-retour profil généré ↔ CSV mesuré (interface)
 
 - Défaut corrigé, antérieur à l'export des champs. La source de pression et

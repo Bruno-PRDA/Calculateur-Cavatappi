@@ -365,12 +365,31 @@ totale fixe, la vitesse effective vaut 2·Pmax·n_cycles / durée.
 ## Cache des réglages
 
 L'application sauvegarde automatiquement les derniers réglages et les derniers
-résultats dans le dossier temporaire Windows. Ce cache n'est pas nécessaire :
-s'il n'existe pas sur un autre PC, l'application repart avec les valeurs par
-défaut.
+résultats dans `%LOCALAPPDATA%\CalculateurCavatappi\AlphaV2`. La variable
+d'environnement `CAVATAPPI_DATA_DIR` impose un autre dossier ; si aucun des
+deux n'est accessible en écriture, l'application se replie sur le dossier
+`.cavatappi_data` à côté des scripts, puis sur le dossier temporaire Windows.
+Ce cache n'est pas nécessaire : s'il n'existe pas sur un autre PC,
+l'application repart avec les valeurs par défaut.
 
-Dans l'interface, le bouton `Paramètres par défaut` réinitialise les paramètres
-de simulation et efface les derniers résultats mis en cache.
+L'ancien emplacement, `%TEMP%\tcpa_cavatappi_alpha_v2_cache`, est recopié une
+seule fois, au premier lancement, si le dossier de stockage n'a pas encore de
+fichier de réglages (les résultats qui s'y trouvent déjà sont gardés) ; un
+marqueur `.recopie_dossier_temporaire_faite` le retient.
+
+Si le fichier de réglages enregistré contient une valeur invalide, seule
+cette valeur reprend sa valeur par défaut, avec au besoin les réglages qui
+deviendraient incompatibles avec elle (Rin < Rout, par exemple). Une valeur
+valide seule mais incompatible avec les autres est écartée elle aussi, et
+seulement elle quand cela suffit. Les autres réglages sont conservés, un
+avertissement nomme à part les réglages invalides et les réglages
+incompatibles, et l'ancien fichier est copié à côté
+(`cavatappi_alpha_v2_settings.invalide.json`). Un fichier illisible est
+traité de la même façon, avec tous les réglages par défaut.
+
+Dans l'interface, `Réinitialiser les paramètres` puis `Confirmer la
+réinitialisation` restaure les paramètres d'origine et efface les résultats
+enregistrés.
 
 ## Transmission de la pression
 

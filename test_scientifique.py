@@ -1256,6 +1256,117 @@ def test_settings_pressure_rate_migration() -> None:
     assert any("écrêtée" in str(w.message) for w in caught)
 
 
+def test_settings_storage_robustness() -> None:
+    """Stockage des réglages : import d'un JSON avec null refusé par un message ;
+    une valeur invalide du fichier enregistré ne remet plus tous les réglages
+    aux défauts (copie de l'ancien fichier) ; la recopie du dossier temporaire
+    historique n'a lieu qu'une fois, même après une réinitialisation ; la sonde
+    d'écriture ne laisse aucun fichier."""
+    import pickle
+    import tempfile
+
+    for bad in ('{"n_layers": null}', '{"eps": [0.8]}', '{"n_layers": Infinity}', '{"use_fixed_duration": null}',
+                '{"n_layers": 1' + "0" * 400 + "}", "[" * 100000):
+        try:
+            parametres.parse_settings_export(bad)
+        except ValueError as exc:
+            assert "invalide" in str(exc) or "non finie" in str(exc) or "JSON" in str(exc), exc
+        else:
+            raise AssertionError(f"{bad[:40]} aurait dû être refusé.")
+
+    names = ("CACHE_DIR", "SETTINGS_PATH", "LEGACY_CACHE_DIR", "RESULT_CACHE_PATHS")
+    saved_globals = {name: getattr(parametres, name) for name in names}
+    saved_env = os.environ.get("CAVATAPPI_DATA_DIR")
+    blocked_name = "cavatappi_alpha_v2_blocked.pkl"
+    defaults = parametres.DEFAULT_SETTINGS
+
+    def use_storage(folder: Path) -> None:
+        folder.mkdir(exist_ok=True)
+        parametres.CACHE_DIR = folder
+        parametres.SETTINGS_PATH = folder / "cavatappi_alpha_v2_settings.json"
+        parametres.RESULT_CACHE_PATHS = (folder / blocked_name,)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        try:
+            os.environ["CAVATAPPI_DATA_DIR"] = str(root / "choisi")
+            assert parametres._select_storage_directory() == root / "choisi"
+            assert list((root / "choisi").iterdir()) == []
+            # Dossier existant mais interdit en écriture : repli immédiat sur le suivant.
+            (root / "interdit").mkdir()
+            os.environ["CAVATAPPI_DATA_DIR"] = str(root / "interdit")
+
+            def refuse_open(path, *args, **kwargs):
+                if Path(path).parent == root / "interdit":
+                    raise PermissionError(13, "Accès refusé", str(path))
+                return open(path, *args, **kwargs)
+
+            parametres.open = refuse_open
+            try:
+                assert parametres._select_storage_directory() != root / "interdit"
+            finally:
+                del parametres.open
+
+            parametres.LEGACY_CACHE_DIR = root / "ancien_temp"
+            use_storage(root / "stockage")
+            invalid = dict(defaults, eps=0.65, dt=0.25, n_cycles=3, rin_mm=1.2, rout_mm=1.5, field_export_mode="foo", n_layers=None)
+            raw = json.dumps(invalid).encode("utf-8")
+            parametres.SETTINGS_PATH.write_bytes(raw)
+            loaded, notice = parametres.load_settings_with_report()
+            kept = {key: loaded[key] for key in ("eps", "dt", "n_cycles", "rin_mm", "rout_mm")}
+            assert kept == {"eps": 0.65, "dt": 0.25, "n_cycles": 3, "rin_mm": 1.2, "rout_mm": 1.5}, kept
+            assert loaded["field_export_mode"] == defaults["field_export_mode"] and loaded["n_layers"] == defaults["n_layers"]
+            assert "field_export_mode" in notice and "n_layers" in notice, notice
+            backup = parametres.SETTINGS_PATH.with_name("cavatappi_alpha_v2_settings.invalide.json")
+            assert backup.read_bytes() == raw
+            parametres.SETTINGS_PATH.write_bytes(b"{pas du json")
+            loaded, notice = parametres.load_settings_with_report()
+            assert loaded == dict(defaults) and "illisible" in notice and backup.read_bytes() == b"{pas du json"
+            parametres.SETTINGS_PATH.write_text(json.dumps(dict(defaults, eps=0.65)), encoding="utf-8")
+            assert parametres.load_settings_with_report() == (parametres.normalize_settings(dict(defaults, eps=0.65)), None)
+
+            # Contrainte croisée : seule la valeur fautive (rho0 <= Rout) est écartée.
+            geometry = {"rout_mm": 1.5, "rin_mm": 1.2, "nylon_diameter_mm": 2.0}
+            parametres.SETTINGS_PATH.write_text(json.dumps(dict(defaults, rho0_mm=1.2, **geometry)), encoding="utf-8")
+            loaded, notice = parametres.load_settings_with_report()
+            assert {key: loaded[key] for key in geometry} == geometry and loaded["rho0_mm"] == defaults["rho0_mm"]
+            assert "incompatibles" in notice and "rho0_mm" in notice and "rin_mm" not in notice, notice
+            # Numéro de schéma illisible : pas de migration historique silencieuse.
+            custom = dict(defaults, section_update_mode="updated", use_fixed_duration=True, _settings_schema_version=None)
+            parametres.SETTINGS_PATH.write_text(json.dumps(custom), encoding="utf-8")
+            loaded, notice = parametres.load_settings_with_report()
+            assert loaded["section_update_mode"] == "updated" and loaded["use_fixed_duration"] is True and notice is None
+            # Schéma 17 avec débit/volume et P_max invalide : la demi-période 60·V/Q est gardée.
+            legacy_rate = {key: value for key, value in defaults.items() if key != "pressure_rate_mpa_s"}
+            legacy_rate.update(_settings_schema_version=17, flow_rate_mL_min=5.0, volume_mL=1.5, p_max_mpa="abc")
+            parametres.SETTINGS_PATH.write_text(json.dumps(legacy_rate), encoding="utf-8")
+            loaded, notice = parametres.load_settings_with_report()
+            assert np.isclose(loaded["p_max_mpa"] / loaded["pressure_rate_mpa_s"], 60.0 * 1.5 / 5.0) and "p_max_mpa" in notice
+
+            legacy = parametres.LEGACY_CACHE_DIR
+            legacy.mkdir()
+            (legacy / blocked_name).write_bytes(pickle.dumps({"ancien": True}))
+            (legacy / "cavatappi_alpha_v2_settings.json").write_text(json.dumps(dict(defaults, eps=0.7)), encoding="utf-8")
+            use_storage(root / "neuf")
+            assert parametres.load_settings()["eps"] == 0.7
+            assert parametres.load_result_cache(root / "neuf" / blocked_name) == {"ancien": True}
+            parametres.reset_settings_and_cache()
+            assert parametres.load_result_cache(root / "neuf" / blocked_name) is None
+            assert parametres.load_settings()["eps"] == defaults["eps"]
+            use_storage(root / "deja_utilise")
+            parametres.SETTINGS_PATH.write_text(json.dumps(dict(defaults)), encoding="utf-8")
+            parametres.load_settings()
+            assert not (root / "deja_utilise" / blocked_name).exists()
+            assert (root / "deja_utilise" / parametres.LEGACY_MIGRATION_MARKER).exists()
+        finally:
+            for name, value in saved_globals.items():
+                setattr(parametres, name, value)
+            if saved_env is None:
+                os.environ.pop("CAVATAPPI_DATA_DIR", None)
+            else:
+                os.environ["CAVATAPPI_DATA_DIR"] = saved_env
+
+
 def test_v4_closed_loop_identification_tool() -> None:
     """V4-6 : l'outil identification/identifier_spectre_moteur.py retrouve,
     sur un signal synthetique produit par le moteur, une relaxation de meme
@@ -1314,6 +1425,7 @@ def main() -> None:
         test_v4_mechanisms_over_cycles,
         test_pressure_rate_profile,
         test_settings_pressure_rate_migration,
+        test_settings_storage_robustness,
         test_v4_closed_loop_identification_tool,
     )
     for test in tests:

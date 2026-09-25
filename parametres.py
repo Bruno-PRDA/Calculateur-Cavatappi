@@ -27,6 +27,7 @@ P_MAX_PSI = P_MAX_MPA / PSI_TO_MPA
 DEFAULT_PARALLEL_WORKERS = max(1, min(4, (os.cpu_count() or 2) - 1))
 
 LEGACY_CACHE_DIR = Path(tempfile.gettempdir()) / "tcpa_cavatappi_alpha_v2_cache"
+LEGACY_MIGRATION_MARKER = ".recopie_dossier_temporaire_faite"
 
 
 def _select_storage_directory() -> Path:
@@ -44,8 +45,14 @@ def _select_storage_directory() -> Path:
     for candidate in candidates:
         try:
             candidate.mkdir(parents=True, exist_ok=True)
-            probe = candidate / ".write_test"
-            probe.write_bytes(b"ok")
+            # Sonde au nom unique : avec un nom fixe, deux processus lances
+            # ensemble (workers du calcul parallele) se supprimaient la sonde
+            # et l'un d'eux rejetait a tort le dossier. Creation exclusive et
+            # non tempfile.mkstemp, qui reessaie sans fin sur un dossier
+            # existant mais interdit en ecriture sous Windows.
+            probe = candidate / f".write_test_{os.getpid()}_{os.urandom(8).hex()}"
+            with open(probe, "xb") as file:
+                file.write(b"ok")
             probe.unlink(missing_ok=True)
             return candidate
         except OSError:
@@ -361,10 +368,28 @@ def option_index(options: list[str], value: object) -> int:
 
 
 def _migrate_legacy_storage() -> None:
-    """Recopie une seule fois les anciennes données conservées dans le dossier temporaire."""
+    """Recopie une seule fois les anciennes données conservées dans le dossier temporaire.
+
+    Un marqueur dans le dossier de stockage retient que la recopie est faite :
+    sans lui, chaque lecture recopiait les fichiers manquants, et une
+    réinitialisation faisait réapparaître l'ancien résultat du dossier
+    temporaire. Un dossier déjà utilisé (réglages présents) ne reçoit rien.
+    """
     if CACHE_DIR == LEGACY_CACHE_DIR or not LEGACY_CACHE_DIR.exists():
         return
+    marker = CACHE_DIR / LEGACY_MIGRATION_MARKER
+    if marker.exists():
+        return
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    if not SETTINGS_PATH.exists():
+        _copy_legacy_files()
+    try:
+        marker.write_text("Données du dossier temporaire historique déjà recopiées.\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _copy_legacy_files() -> None:
     for name in (
         "cavatappi_alpha_v2_settings.json",
         "cavatappi_alpha_v2_timing_profile.json",
@@ -402,6 +427,10 @@ def _atomic_write(path: Path, payload: bytes) -> None:
 
 def _coerce_setting(key: str, value: Any) -> SettingValue:
     default = DEFAULT_SETTINGS[key]
+    # Une valeur JSON null, une liste ou un objet ne sont jamais un réglage :
+    # int(None) levait un TypeError qui échappait au message « Import impossible ».
+    if value is None or isinstance(value, (dict, list, tuple, set)):
+        raise ValueError(f"Valeur manquante ou invalide pour '{key}' : {value!r}.")
     if isinstance(default, bool):
         if isinstance(value, str):
             normalized = value.strip().lower()
@@ -411,18 +440,33 @@ def _coerce_setting(key: str, value: Any) -> SettingValue:
                 return False
             raise ValueError(f"Valeur booléenne invalide pour '{key}'.")
         return bool(value)
-    if isinstance(default, int):
-        return int(value)
-    if isinstance(default, float):
+    try:
+        if isinstance(default, int):
+            converted_int = int(value)
+            float(converted_int)  # OverflowError pour un entier démesuré (1 suivi de 400 zéros)
+            return converted_int
+        if not isinstance(default, float):
+            return str(value)
         converted = float(value)
-        if not np.isfinite(converted):
-            raise ValueError(f"Valeur non finie pour '{key}'.")
-        return converted
-    return str(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"Valeur invalide pour '{key}' : {value!r}.") from exc
+    if not np.isfinite(converted):
+        raise ValueError(f"Valeur non finie pour '{key}'.")
+    return converted
 
 
 def normalize_settings(saved: dict[str, Any]) -> dict[str, SettingValue]:
     """Fusionne, convertit et verrouille les options constitutives d'Alpha V2."""
+    settings = _normalized_values(saved)
+    error = settings_error(settings)
+    if error:
+        raise ValueError(error)
+    return settings
+
+
+def _normalized_values(saved: dict[str, Any]) -> dict[str, SettingValue]:
+    """normalize_settings sans les contrôles croisés de settings_error : chaque
+    valeur est convertie et vérifiée seule (bornes, options connues)."""
     if not isinstance(saved, dict):
         raise ValueError("Le contenu des paramètres doit être un objet JSON.")
 
@@ -513,10 +557,6 @@ def normalize_settings(saved: dict[str, Any]) -> dict[str, SettingValue]:
     ):
         if str(settings[key]) not in options:
             raise ValueError(f"Option inconnue pour '{key}'.")
-
-    error = settings_error(settings)
-    if error:
-        raise ValueError(error)
     return settings
 
 
@@ -524,7 +564,7 @@ def parse_settings_export(payload: bytes | str) -> dict[str, SettingValue]:
     try:
         raw = payload.decode("utf-8-sig") if isinstance(payload, bytes) else payload
         document = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise ValueError("Le fichier de paramètres n'est pas un JSON valide.") from exc
     if not isinstance(document, dict):
         raise ValueError("Le fichier de paramètres doit contenir un objet JSON.")
@@ -558,15 +598,19 @@ def _legacy_flow_pressure_rate(settings: dict[str, Any]) -> float | None:
     """Vitesse (MPa/s) equivalente au couple debit/volume historique :
     p_max / (60·V/Q), ecretee aux bornes PRESSURE_RATE_BOUNDS avec un
     avertissement ; vitesse par defaut si p_max <= 0 (profil nul) ; None si
-    les cles historiques sont absentes."""
+    les cles historiques sont absentes. Un p_max invalide reprendra sa valeur
+    par defaut (_recover_settings) : la vitesse est calculee avec elle, pour
+    garder la demi-periode 60·V/Q."""
     half = _legacy_half_period_s(settings)
     if half is None:
         return None
     try:
         p_max = float(settings.get("p_max_mpa", P_MAX_MPA))
     except (TypeError, ValueError):
-        return None
-    if not np.isfinite(p_max) or p_max <= 0.0:
+        p_max = P_MAX_MPA
+    if not np.isfinite(p_max):
+        p_max = P_MAX_MPA
+    if p_max <= 0.0:
         return DEFAULT_PRESSURE_RATE_MPA_S
     rate = p_max / half
     clipped = float(min(max(rate, PRESSURE_RATE_BOUNDS[0]), PRESSURE_RATE_BOUNDS[1]))
@@ -615,24 +659,51 @@ def _migrate_flow_to_pressure_rate(saved: dict[str, Any]) -> None:
         return
     try:
         saved["pressure_rate_mpa_s"] = _settings_pressure_rate(saved)
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         warnings.warn(f"{exc} La vitesse explicite est conservée.", RuntimeWarning, stacklevel=2)
     saved.pop("flow_rate_mL_min", None)
     saved.pop("volume_mL", None)
 
 
 def load_settings() -> dict[str, SettingValue]:
+    return load_settings_with_report()[0]
+
+
+def load_settings_with_report() -> tuple[dict[str, SettingValue], str | None]:
+    """Réglages enregistrés et, s'il a fallu en écarter, un message pour l'interface.
+
+    Une valeur invalide ne remet plus TOUS les réglages aux défauts : seules les
+    valeurs refusées reprennent leur défaut (_recover_settings). L'interface
+    réenregistre les réglages dès le premier affichage : l'ancien fichier est
+    donc d'abord copié à côté (SETTINGS_BACKUP_SUFFIX).
+    """
     _migrate_legacy_storage()
     try:
-        with SETTINGS_PATH.open("r", encoding="utf-8") as file:
-            saved = json.load(file)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        saved = {}
+        raw = SETTINGS_PATH.read_bytes()
+    except OSError:
+        raw = None
+    saved: Any = {}
+    unreadable = False
+    if raw is not None:
+        try:
+            saved = json.loads(raw.decode("utf-8-sig"))
+        except (UnicodeDecodeError, ValueError, RecursionError):
+            # ValueError couvre JSONDecodeError et les entiers de plus de 4300 chiffres.
+            saved, unreadable = {}, True
+        if not isinstance(saved, dict):
+            saved, unreadable = {}, True
 
-    try:
-        saved_version = int(saved.get("_settings_schema_version", 1))
-    except (TypeError, ValueError, AttributeError):
+    # Un fichier sans numéro de schéma est historique (schéma 1). Un numéro
+    # présent mais illisible (null, "19.0" retouché à la main) n'en fait pas un
+    # fichier historique : les migrations ci-dessous remettraient sans le dire
+    # des options aux défauts.
+    if "_settings_schema_version" not in saved:
         saved_version = 1
+    else:
+        try:
+            saved_version = int(float(saved["_settings_schema_version"]))
+        except (TypeError, ValueError, OverflowError):
+            saved_version = SETTINGS_SCHEMA_VERSION
     saved = dict(saved)
     if saved_version < 16:
         # Migration historique (schemas <= 15) : remises a zero des options dont
@@ -643,13 +714,16 @@ def load_settings() -> dict[str, SettingValue]:
             if abs(float(saved.get("dt", DEFAULT_SETTINGS["dt"])) - 2.0) < 1e-12:
                 saved["dt"] = DEFAULT_SETTINGS["dt"]
         except (TypeError, ValueError):
-            saved["dt"] = DEFAULT_SETTINGS["dt"]
+            pass  # valeur invalide : remise au défaut, et signalée, par _recover_settings
         if str(saved.get("integration", "")) in {"paper_incremental", "paper"}:
             saved["integration"] = "exponential"
         saved["nylon_axial_actuation_coupling"] = 1.0
         saved["use_fixed_duration"] = False
         saved["nonlinear_pressure"] = False
-        saved["p_max_mpa"] = min(float(saved.get("p_max_mpa", P_MAX_MPA)), P_MAX_MPA)
+        try:
+            saved["p_max_mpa"] = min(float(saved.get("p_max_mpa", P_MAX_MPA)), P_MAX_MPA)
+        except (TypeError, ValueError):
+            pass  # valeur invalide : remise au défaut, et signalée, par _recover_settings
         saved["section_update_mode"] = DEFAULT_SETTINGS["section_update_mode"]
         saved["bias_angle_profile"] = DEFAULT_SETTINGS["bias_angle_profile"]
         saved["uncoiled_compliance_mode"] = DEFAULT_SETTINGS["uncoiled_compliance_mode"]
@@ -673,10 +747,94 @@ def load_settings() -> dict[str, SettingValue]:
         # (fusion avec DEFAULT_SETTINGS dans normalize_settings).
         saved["_settings_schema_version"] = SETTINGS_SCHEMA_VERSION
 
+    if unreadable:
+        backup = _backup_settings_file(raw)
+        return dict(DEFAULT_SETTINGS), (
+            "Le fichier de réglages enregistré était illisible : les réglages par défaut sont utilisés. " + backup
+        )
     try:
-        return normalize_settings(saved)
+        return normalize_settings(saved), None
     except (TypeError, ValueError):
-        return dict(DEFAULT_SETTINGS)
+        settings, invalid, incompatible = _recover_settings(saved)
+    if not invalid and not incompatible:
+        return settings, None
+    parts = []
+    if invalid:
+        parts.append(f"Réglages enregistrés invalides remis à leur valeur par défaut : {', '.join(invalid)}.")
+    if incompatible:
+        parts.append(
+            "Réglages incompatibles avec les autres valeurs (Rin < Rout, par exemple), remis aussi à leur "
+            f"valeur par défaut : {', '.join(incompatible)}."
+        )
+    parts.append("Les autres réglages sont conservés.")
+    parts.append(_backup_settings_file(raw))
+    return settings, " ".join(parts)
+
+
+def _recover_settings(saved: dict[str, Any]) -> tuple[dict[str, SettingValue], list[str], list[str]]:
+    """Garde les réglages valides d'un fichier que normalize_settings refuse.
+
+    Renvoie les réglages, les clés invalides en elles-mêmes (conversion, bornes,
+    option inconnue) et les clés écartées seulement parce qu'elles contredisent
+    les autres valeurs (contrôles croisés de settings_error). Pour ces
+    dernières, si retirer une seule clé suffit, seule celle-ci est écartée ;
+    sinon les clés sont reprises une à une sur les défauts, une clé refusée
+    étant retentée tant que d'autres sont acceptées.
+    """
+    keys = sorted(key for key in saved.keys() & DEFAULT_SETTINGS.keys() if key != "_settings_schema_version")
+    invalid = []
+    for key in keys:
+        try:
+            _normalized_values({key: saved[key]})
+        except (TypeError, ValueError):
+            invalid.append(key)
+    kept = {key: saved[key] for key in keys if key not in invalid}
+    try:
+        return normalize_settings(kept), invalid, []
+    except (TypeError, ValueError):
+        pass
+
+    single = []
+    for key in kept:
+        try:
+            normalize_settings({other: value for other, value in kept.items() if other != key})
+        except (TypeError, ValueError):
+            continue
+        single.append(key)
+    if len(single) == 1:
+        del kept[single[0]]
+        return normalize_settings(kept), invalid, single
+
+    accepted: dict[str, Any] = {}
+    pending = list(kept)
+    progress = True
+    while pending and progress:
+        progress = False
+        remaining = []
+        for key in pending:
+            try:
+                normalize_settings({**accepted, key: kept[key]})
+            except (TypeError, ValueError):
+                remaining.append(key)
+            else:
+                accepted[key] = kept[key]
+                progress = True
+        pending = remaining
+    return normalize_settings(accepted), invalid, pending
+
+
+SETTINGS_BACKUP_SUFFIX = ".invalide.json"
+
+
+def _backup_settings_file(raw: bytes | None) -> str:
+    """Copie l'ancien fichier de réglages à côté avant qu'il soit réécrit."""
+    backup_path = SETTINGS_PATH.with_name(SETTINGS_PATH.stem + SETTINGS_BACKUP_SUFFIX)
+    try:
+        if raw is not None and (not backup_path.exists() or backup_path.read_bytes() != raw):
+            _atomic_write(backup_path, raw)
+    except OSError:
+        return "La copie de l'ancien fichier a échoué."
+    return f"Copie de l'ancien fichier : {backup_path}."
 
 
 def save_settings(settings: dict[str, SettingValue]) -> None:
