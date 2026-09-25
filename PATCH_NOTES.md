@@ -20,6 +20,25 @@
 - Export désactivé : sorties bit-identiques à v4-16 (actionnement bloqué en
   section fixe et réactualisée, masse suspendue). Tests : 1 test ajouté
   (38 au total), baseline figure 7 inchangée.
+- Revue (24/09) : volet des champs paresseux (fermé, il ne trace plus sa
+  figure à chaque interaction ; Composante et Instant survivent à sa
+  fermeture) ; curseur « Instant enregistré » indexé par le numéro
+  d'itération (il garde l'instant choisi après un nouveau calcul) ;
+  estimation du fichier exacte sur la grille de temps réelle (instants de
+  transition compris) pour un calcul lançable, approchée sinon, absente en
+  CSV mesuré tant qu'aucun fichier n'est chargé ; seuil d'avertissement
+  ramené à 100 000 lignes ; n affiché dans les libellés (n = 1 équivaut à
+  « à chaque itération »), tailles en ko sous 0,1 Mo et en Go au-delà de
+  1 Go, message de relance non redondant ; P_eff enregistrée avec les champs (`pressure_effective_MPa`,
+  reprise de la série temporelle pour les résultats plus anciens) et affichée
+  dans le titre quand elle diffère de P ; `FieldExport` refuse un n non
+  entier ou booléen (numpy compris) ; un résultat en cache d'une autre
+  version du moteur n'est plus repris (la version enregistrée était ignorée
+  dès que les réglages concordaient) et son avertissement le dit ; une
+  signature de cache illisible est traitée comme périmée au lieu de faire
+  planter la page ; `lancer_interface.bat` vérifie la présence de l'export
+  dans `Base.py`, `parametres.py` et `affichage.py`, et renvoie vers
+  `installer_dependances.bat` si une dépendance manque.
 
 ## 2026.09.07 — Vitesse de pression en MPa/s (moteur `2026.09.07-v4-16`)
 

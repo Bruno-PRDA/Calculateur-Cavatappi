@@ -445,6 +445,7 @@ def test_field_export() -> None:
         assert fields["iteration"].tolist() == iterations, mode
         assert np.allclose(fields["time_s"], reference["time"][iterations])
         assert np.allclose(fields["pressure_MPa"], reference["pressure_MPa"][iterations])
+        assert np.allclose(fields["pressure_effective_MPa"], reference["pressure_effective_MPa"][iterations])
         assert fields["sigma_MPa"].shape == (len(iterations), 3, 8, 6)
         assert np.array_equal(fields["sigma_MPa"][-1], model.sigma_total)
         assert np.array_equal(fields["strain"][-1], model.strain_total)
@@ -453,12 +454,15 @@ def test_field_export() -> None:
     # La deformation cumulee part de l'etat fabrique : nulle sans pre-etirement ni pression.
     idle, _ = Base.run_blocked_actuation(eps=0.0, n_cycles=1, n_layers=2, n_phi=4, dt=1.0, Pmax=0.0)
     assert np.allclose(idle.strain_total, 0.0, atol=1e-12)
-    try:
-        Base.FieldExport("every_n", 0)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("every_n = 0 doit etre refuse")
+    for bad in (0, -1, 1.9, 2.5, True, np.True_, np.array(True), "abc", float("nan"), float("inf"), None, 1.0e400):
+        try:
+            Base.FieldExport("every_n", bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"every_n = {bad!r} doit etre refuse")
+    assert Base.FieldExport("every_n", 3.0).every_n == 3 and isinstance(Base.FieldExport("every_n", "4").every_n, int)
+    assert Base.FieldExport("every_n", np.int64(5)).every_n == 5 and Base.FieldExport("every_n", 2**53 + 1).every_n == 2**53 + 1
 
     rows = list(csv.DictReader(StringIO(Base.fields_to_csv_text(fields)), delimiter=";"))
     assert tuple(rows[0]) == Base.FIELD_CSV_COLUMNS

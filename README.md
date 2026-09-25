@@ -79,14 +79,23 @@ enregistre, pendant l'actionnement bloqué, la relaxation et la masse
 suspendue, les composantes σ_ss, σ_φφ, σ_rr, σ_sφ et ε_ss, ε_φφ, ε_rr, ε_sφ au
 centre de chaque couche et de chaque division φ. Fréquences proposées :
 désactivé (défaut), à chaque itération Δt, toutes les n itérations Δt (la
-dernière est toujours incluse) ou uniquement à l'instant final. L'itération 0
-est l'état précontraint à t = 0 et correspond à la première ligne des séries
-temporelles.
+dernière est toujours incluse) ou uniquement à l'instant final. Les
+itérations sont les pas de calcul de l'historique de pression : pas Δt
+réguliers plus les instants de transition (sommets et fins de cycle ; fin de
+rampe et de maintien en relaxation) pour un profil généré, échantillons du
+fichier pour un CSV mesuré. « Toutes les n itérations » ne vaut donc pas
+exactement « toutes les n·Δt secondes ». L'itération 0 est l'état initial à
+t = 0, sous P(0), et correspond à la première ligne des séries temporelles :
+état précontraint en actionnement bloqué et en relaxation (déjà sous pression
+si le CSV mesuré commence au-dessus de zéro), état d'équilibre sous la masse
+en masse suspendue.
 
 Chaque onglet de calcul affiche alors un volet `Champs de contraintes et de
-déformations (σ, ε)` : carte de la composante choisie sur la section, profils
-radiaux (moyenne sur φ, extrados, intrados) et bouton `Exporter les champs en
-CSV`. Colonnes :
+déformations (σ, ε)`. Ouvert, il montre la carte de la composante choisie sur
+la section, les profils radiaux (moyenne sur φ, extrados, intrados) et le
+bouton `Exporter les champs en CSV` ; fermé, sa figure n'est pas tracée (le
+choix de la composante et de l'instant est conservé), pour ne pas ralentir
+l'interface. Colonnes :
 
     iteration;t;x;y;z;r;phi;sigma_ss;sigma_phiphi;sigma_rr;sigma_sphi;epsilon_ss;epsilon_phiphi;epsilon_rr;epsilon_sphi
 
@@ -102,6 +111,14 @@ CSV`. Colonnes :
   pré-étirement compris. En section réactualisée, chaque incrément est mesuré
   sur la configuration courante, ce qui revient à une déformation
   logarithmique.
+- Le problème radial est chargé par la pression effective P_eff, égale à la
+  pression appliquée P tant que les mécanismes d'engagement et de frottement
+  sont inactifs : σ_rr tend vers −P_eff à la paroi intérieure. Le titre de la
+  figure affiche P_eff quand elle diffère de P. Le CSV des champs ne contient
+  pas de pression : les deux pressions sont dans `data["fields"]` (clés
+  `pressure_MPa` et `pressure_effective_MPa`) et dans le CSV des résultats,
+  dont la ligne k (en partant de 0) correspond à l'itération k des champs, au
+  même temps `t` = `time`.
 
 Depuis un script :
 

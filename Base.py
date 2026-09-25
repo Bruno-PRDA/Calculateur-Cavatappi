@@ -20,6 +20,7 @@ from dataclasses import dataclass, is_dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict, List, Optional, Tuple
+import operator
 import warnings
 
 import numpy as np
@@ -315,8 +316,22 @@ class FieldExport:
     def __post_init__(self) -> None:
         if self.mode not in FIELD_EXPORT_MODES:
             raise ValueError(f"field export mode must be one of {FIELD_EXPORT_MODES}.")
-        if int(self.every_n) < 1:
-            raise ValueError("field export every_n must be a positive integer.")
+        message = "field export every_n must be a positive integer."
+        if isinstance(self.every_n, (bool, np.bool_)) or getattr(self.every_n, "dtype", None) == np.bool_:
+            raise ValueError(message)
+        try:
+            every_n = operator.index(self.every_n)
+        except TypeError:
+            try:
+                as_float = float(self.every_n)
+            except (TypeError, ValueError, OverflowError):
+                raise ValueError(message) from None
+            if not as_float.is_integer():
+                raise ValueError(message)
+            every_n = int(as_float)
+        if every_n < 1:
+            raise ValueError(message)
+        object.__setattr__(self, "every_n", int(every_n))
 
     @property
     def enabled(self) -> bool:
@@ -2193,6 +2208,9 @@ class TCPAMaxwellBlockedModel:
                 "iteration": int(iteration),
                 "time_s": float(self.helix.time) - self._field_time_origin,
                 "pressure_MPa": float(self.helix.pressure),
+                # Pression qui charge le probleme radial (differe de P avec
+                # l'engagement ou le frottement V4) : sigma_rr(R_in) ~ -P_eff.
+                "pressure_effective_MPa": float(self.p_effective),
                 "R_centers_mm": self.R_centers.copy(),
                 "R_edges_mm": self.R_edges.copy(),
                 "sigma_MPa": self.sigma_total.copy(),
@@ -2209,6 +2227,7 @@ class TCPAMaxwellBlockedModel:
             "iteration": np.array([s["iteration"] for s in snaps], dtype=int),
             "time_s": np.array([s["time_s"] for s in snaps], dtype=float),
             "pressure_MPa": np.array([s["pressure_MPa"] for s in snaps], dtype=float),
+            "pressure_effective_MPa": np.array([s["pressure_effective_MPa"] for s in snaps], dtype=float),
             "R_centers_mm": np.stack([s["R_centers_mm"] for s in snaps]),
             "R_edges_mm": np.stack([s["R_edges_mm"] for s in snaps]),
             "phi_rad": self.phi.copy(),

@@ -17,11 +17,12 @@ if errorlevel 1 (
     set "PYTHON_CMD=py -3"
 )
 
-%PYTHON_CMD% -c "import sys; sys.path.insert(0, sys.argv[1]); import parametres as p; assert hasattr(p, 'MAXWELL_ANISOTROPY_LABELS'), 'parametres.py est incomplet'" "%~dp0"
+%PYTHON_CMD% -c "import sys; sys.path.insert(0, sys.argv[1]); import parametres as p, Base as b, affichage as a; assert hasattr(p, 'FIELD_COMPONENT_LABELS') and hasattr(b, 'FieldExport') and hasattr(a, 'plot_field_section'), 'Base.py, parametres.py ou affichage.py est incomplet'" "%~dp0"
 if errorlevel 1 (
     echo.
     echo ERREUR : les fichiers du dossier Alpha V2 sont incomplets ou incompatibles.
-    echo Verifiez que lancer_interface.bat, interface.py et parametres.py proviennent de la meme version.
+    echo Verifiez que lancer_interface.bat, interface.py, parametres.py, Base.py et affichage.py proviennent de la meme version.
+    echo Si le message ci-dessus indique "No module named", une dependance manque : lancez installer_dependances.bat.
     pause
     exit /b 1
 )

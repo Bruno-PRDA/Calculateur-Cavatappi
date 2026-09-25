@@ -137,6 +137,7 @@ def render_csv_download(payload: bytes | None, filename: str, key: str) -> None:
 
 
 FIELD_CSV_BYTES_PER_ROW = 140  # mesure sur l'export (15 colonnes, 8 chiffres significatifs)
+FIELD_ROWS_WARNING = 100_000  # ~14 Mo
 
 
 def field_export_from_settings(settings: dict[str, SettingValue]) -> modele.FieldExport:
@@ -146,8 +147,41 @@ def field_export_from_settings(settings: dict[str, SettingValue]) -> modele.Fiel
     )
 
 
+def field_export_label(export: modele.FieldExport) -> str:
+    if export.mode == "every_n" and export.every_n == 1:
+        return FIELD_EXPORT_LABELS["every"]
+    if export.mode == "every_n":
+        return f"Toutes les {export.every_n} itérations Δt"
+    return FIELD_EXPORT_LABELS[export.mode]
+
+
+def format_file_size(n_bytes: float) -> str:
+    if n_bytes >= 1.0e9:
+        return f"~{n_bytes / 1.0e9:.1f} Go"
+    return f"~{n_bytes / 1.0e3:.0f} ko" if n_bytes < 1.0e5 else f"~{n_bytes / 1.0e6:.1f} Mo"
+
+
+def blocked_field_steps(settings: dict[str, SettingValue], measured_history) -> int | None:
+    """Pas de calcul de l'actionnement bloqué sur sa grille réelle, instants de
+    transition compris ; None tant que l'historique mesuré n'est pas chargé."""
+    if str(settings.get("pressure_input_mode", "generated")) == "measured_csv":
+        return None if measured_history is None else max(1, len(measured_history["time"]) - 1)
+    config = build_config(settings)
+    time_grid, _ = make_pressure_history(config)
+    if time_grid is None:
+        # Même grille que Base.run_blocked_actuation pour un profil cyclique.
+        time_grid, _ = modele.cyclic_pressure_history(
+            config.n_cycles,
+            config.Pmax,
+            dt=config.dt,
+            nonlinear=config.nonlinear_pressure,
+            half_period_s=modele._config_half_period(config),
+        )
+    return len(time_grid) - 1
+
+
 def estimated_field_rows(settings: dict[str, SettingValue], steps: int) -> int:
-    """Lignes du CSV des champs pour `steps` pas Δt (itérations 0 à steps)."""
+    """Lignes du CSV des champs pour `steps` pas de calcul (itérations 0 à steps)."""
     export = field_export_from_settings(settings)
     if not export.enabled:
         return 0
@@ -170,24 +204,41 @@ def render_field_section(
     fields = result["data"].get("fields")
     used = field_export_from_settings(result["settings"])
     requested = field_export_from_settings(requested_settings)
-    with st.expander("Champs de contraintes et de déformations (σ, ε)", expanded=False):
-        if (used.mode, used.every_n if used.mode == "every_n" else 0) != (
-            requested.mode,
-            requested.every_n if requested.mode == "every_n" else 0,
-        ):
+    # Volet paresseux : fermé, il ne trace pas sa figure, sinon chaque
+    # interaction retracerait celles des trois onglets. Les widgets restent
+    # créés pour que Composante et Instant survivent à une fermeture.
+    expander = st.expander(
+        "Champs de contraintes et de déformations (σ, ε)", expanded=False, key=f"{key}_expander", on_change="rerun"
+    )
+    with expander:
+        if field_export_label(used) != field_export_label(requested):
             st.info(
-                f"Ce calcul a été fait avec l’export « {FIELD_EXPORT_LABELS[used.mode]} » ; "
-                f"relancez-le pour appliquer « {FIELD_EXPORT_LABELS[requested.mode]} »."
+                f"Ce calcul a été fait avec l’export « {field_export_label(used)} » ; "
+                f"relancez-le pour appliquer « {field_export_label(requested)} »."
             )
         if fields is None:
-            st.caption(
-                "Aucun champ enregistré pour ce calcul. Choisissez une fréquence d’export dans le volet "
-                "« Champs de contraintes et déformations » de la barre latérale, puis relancez le calcul."
-            )
+            if requested.enabled:
+                st.caption("Aucun champ enregistré pour ce calcul.")
+            else:
+                st.caption(
+                    "Aucun champ enregistré pour ce calcul. Choisissez une fréquence d’export dans le volet "
+                    "« Champs de contraintes et déformations » de la barre latérale, puis relancez le calcul."
+                )
             return
-        iterations = np.asarray(fields["iteration"], dtype=int)
+        iterations = [int(i) for i in fields["iteration"]]
+        position = {iteration: k for k, iteration in enumerate(iterations)}
         times = np.asarray(fields["time_s"], dtype=float)
         pressures = np.asarray(fields["pressure_MPa"], dtype=float)
+        effective = fields.get("pressure_effective_MPa")
+        if effective is None:
+            # Résultat en cache antérieur à l'ajout de P_eff aux champs : la
+            # série temporelle est alignée sur les numéros d'itération.
+            series = result["data"].get("pressure_effective_MPa")
+            if series is None or len(series) <= iterations[-1]:
+                effective = pressures
+            else:
+                effective = np.asarray(series, dtype=float)[iterations]
+        effective = np.asarray(effective, dtype=float)
         component_column, instant_column = st.columns([1.0, 1.4])
         component = component_column.selectbox(
             "Composante",
@@ -195,38 +246,44 @@ def render_field_section(
             format_func=lambda name: FIELD_COMPONENT_LABELS[name][0],
             key=f"{key}_component",
         )
-        if iterations.size > 1:
-            snapshot = instant_column.select_slider(
+        if len(iterations) > 1:
+            # Options = numéros d'itération : après un nouveau calcul, le curseur
+            # garde l'instant choisi s'il est encore enregistré.
+            chosen = instant_column.select_slider(
                 "Instant enregistré",
-                options=list(range(iterations.size)),
-                value=iterations.size - 1,
-                format_func=lambda i: f"it. {iterations[i]} · t = {times[i]:.2f} s",
+                options=iterations,
+                value=iterations[-1],
+                format_func=lambda it: f"it. {it} · t = {times[position[it]]:.2f} s",
                 key=f"{key}_snapshot",
             )
+            snapshot = position[int(chosen)]
         else:
             snapshot = 0
             instant_column.caption(f"Instant enregistré : itération {iterations[0]}, t = {times[0]:.2f} s.")
+        if not expander.open:
+            return
         label, unit = FIELD_COMPONENT_LABELS[component]
         values = modele.field_component(fields, component)[snapshot]
+        pressure_text = f"P = {pressures[snapshot]:.3f} MPa"
+        if abs(effective[snapshot] - pressures[snapshot]) > 1.0e-9:
+            pressure_text += f", P_eff = {effective[snapshot]:.3f} MPa"
         fig_field = plot_field_section(
             fields["R_edges_mm"][snapshot],
             fields["phi_rad"],
             values,
             label.split(",")[0],
             unit,
-            title=(
-                f"{label} — it. {iterations[snapshot]}, t = {times[snapshot]:.2f} s, "
-                f"P = {pressures[snapshot]:.3f} MPa"
-            ),
+            title=f"{label} — it. {iterations[snapshot]}, t = {times[snapshot]:.2f} s, {pressure_text}",
         )
         st.pyplot(fig_field)
         plt.close(fig_field)
-        n_rows = iterations.size * values.size
+        n_rows = len(iterations) * values.size
         st.caption(
-            f"{iterations.size} instant(s) × {values.shape[0]} couches × {values.shape[1]} divisions φ = "
-            f"{n_rows} lignes (~{n_rows * FIELD_CSV_BYTES_PER_ROW / 1.0e6:.1f} Mo). Unités : s, mm, rad, MPa ; "
+            f"{len(iterations)} instant(s) × {values.shape[0]} couches × {values.shape[1]} divisions φ = "
+            f"{n_rows} lignes ({format_file_size(n_rows * FIELD_CSV_BYTES_PER_ROW)}). Unités : s, mm, rad, MPa ; "
             "ε_sφ est la composante tensorielle (γ/2). Les composantes restent dans le repère local (s, φ, r) ; "
-            "seules les positions sont cartésiennes (z = s, section s = 0)."
+            "seules les positions sont cartésiennes (z = s, section s = 0). Le problème radial est chargé par "
+            "la pression effective P_eff, égale à P tant que les mécanismes d’engagement et de frottement sont inactifs."
         )
         st.download_button(
             "Exporter les champs en CSV",
@@ -477,12 +534,32 @@ def result_matches_settings(
 ) -> bool:
     if result is None:
         return False
-    if result.get("signature") == signature:
+    stored_signature = result.get("signature")
+    if stored_signature == signature:
         return True
+    # Le repli ci-dessous recalcule la signature avec la version COURANTE du
+    # moteur : un résultat d'une autre version ne doit jamais y arriver.
+    try:
+        same_version = bool(stored_signature) and tuple(stored_signature[0]) == tuple(signature[0])
+    except (TypeError, KeyError, IndexError, ValueError):
+        return False
+    if not same_version:
+        return False
     saved_settings = result.get("settings")
     if isinstance(saved_settings, dict):
         return settings_signature(saved_settings, ignore_keys) == signature
     return False
+
+
+def stale_result_message(stored_result: dict, action: str) -> str:
+    """Avertissement d'un résultat enregistré périmé : autre version du moteur ou réglages modifiés."""
+    try:
+        name, version = stored_result.get("signature")[0]
+    except (TypeError, ValueError, IndexError, KeyError, AttributeError):
+        name, version = None, None
+    if name == "_model_version" and version != str(modele.MODEL_VERSION):
+        return f"Ce résultat a été calculé par une autre version du moteur ({version}). Veuillez relancer {action}."
+    return f"Les paramètres ont changé depuis le dernier calcul. Veuillez relancer {action}."
 
 
 def make_pressure_rate_history(config, rate_mpa_s: float, n_cycles_for_history: int):
@@ -1254,7 +1331,8 @@ with st.sidebar.expander("Champs de contraintes et déformations"):
         [
             "Enregistre σ_ss, σ_φφ, σ_rr, σ_sφ et ε_ss, ε_φφ, ε_rr, ε_sφ au centre de chaque couche et de chaque division φ, pour l’actionnement bloqué, la relaxation et la masse suspendue.",
             "Les coordonnées locales (r, φ) sont converties en x = r cos φ, y = r sin φ, avec z = s. Les champs du modèle ne dépendent pas de s : la section exportée est s = 0.",
-            "L’itération 0 est l’état précontraint à t = 0 ; chaque itération suivante est un pas Δt. En mode « toutes les n itérations », la dernière est toujours incluse.",
+            "Les itérations sont les pas de calcul de l’historique de pression : pas Δt réguliers plus les instants de transition (sommets et fins de cycle ; fin de rampe et de maintien en relaxation), ou échantillons du CSV mesuré. En mode « toutes les n itérations », la dernière est toujours incluse.",
+            "L’itération 0 est l’état initial à t = 0, sous P(0) : précontraint en actionnement bloqué et en relaxation (déjà sous pression si le CSV mesuré commence au-dessus de zéro), à l’équilibre sous la masse en masse suspendue.",
             "Le fichier compte couches × divisions φ lignes par instant enregistré. Les déformations cumulent les incréments depuis l’état fabriqué, pré-étirement compris.",
         ]
     )
@@ -1798,16 +1876,35 @@ with action_status_column:
         st.caption("Calcul exigeant : la barre de progression donnera une estimation actualisée.")
     else:
         st.caption("Les résultats seront conservés et réaffichés au prochain démarrage.")
-field_rows_estimate = estimated_field_rows(current_settings, estimated_steps)
+field_export_requested = field_export_from_settings(current_settings)
+field_steps = None
+# Le mode final ne dépend pas du nombre de pas ; en CSV mesuré, estimated_steps
+# est déjà le nombre exact d'échantillons moins un.
+field_steps_exact = field_export_requested.mode == "final" or (
+    pressure_input_mode == "measured_csv" and uploaded_pressure_payload is not None
+)
+if field_export_requested.enabled and error is None and not missing_measured_pressure:
+    field_steps = estimated_steps
+    # La grille réelle (instants de transition compris) n'est construite que
+    # pour un calcul lançable, donc au plus ~62 500 pas ; le mode final n'en
+    # dépend pas.
+    if not run_disabled and not field_steps_exact:
+        try:
+            field_steps = blocked_field_steps(current_settings, uploaded_pressure_payload)
+            field_steps_exact = True
+        except Exception:
+            pass
+field_rows_estimate = 0 if field_steps is None else estimated_field_rows(current_settings, field_steps)
 if field_rows_estimate:
-    field_mode_label = FIELD_EXPORT_LABELS[str(field_export_mode)]
+    field_mode_label = field_export_label(field_export_requested)
     field_message = (
-        f"Export des champs σ et ε ({field_mode_label[0].lower() + field_mode_label[1:]}) : environ "
-        f"{field_rows_estimate} lignes (~{field_rows_estimate * FIELD_CSV_BYTES_PER_ROW / 1.0e6:.1f} Mo) "
-        "pour l’actionnement bloqué."
+        f"Export des champs σ et ε ({field_mode_label[0].lower() + field_mode_label[1:]}) : "
+        f"{'' if field_steps_exact else 'environ '}{field_rows_estimate} lignes "
+        f"({format_file_size(field_rows_estimate * FIELD_CSV_BYTES_PER_ROW)}) pour l’actionnement bloqué."
     )
-    if field_rows_estimate > 1_000_000:
-        st.warning(field_message + " Fichier volumineux : préférez un export toutes les n itérations.")
+    if field_rows_estimate > FIELD_ROWS_WARNING and not run_disabled:
+        advice = "augmentez n" if field_export_requested.mode == "every_n" else "préférez un export toutes les n itérations"
+        st.warning(field_message + f" Fichier volumineux, lent à générer et à ouvrir : {advice}.")
     else:
         st.caption(field_message)
 
@@ -1907,7 +2004,7 @@ with tabs[0]:
         if stored_result is None:
             st.info("Utilisez le bouton de calcul situé au-dessus du visualiseur pour lancer le modèle.")
         else:
-            st.warning("Les paramètres ont changé depuis le dernier calcul. Veuillez relancer l'actionnement bloqué pour mettre les résultats à jour.")
+            st.warning(stale_result_message(stored_result, "l'actionnement bloqué pour mettre les résultats à jour"))
     else:
         summary = result["summary"]
         data = result["data"]
@@ -1967,7 +2064,7 @@ with tabs[1]:
         if stored_result is None:
             st.info("Veuillez d'abord lancer le modèle dans l'onglet 'Sortie modèle' pour afficher les courbes temporelles.")
         else:
-            st.warning("Les paramètres ont changé depuis le dernier calcul. Veuillez relancer l'actionnement bloqué pour mettre les courbes à jour.")
+            st.warning(stale_result_message(stored_result, "l'actionnement bloqué pour mettre les courbes à jour"))
     else:
         # Le graphe est rempli APRÈS le volet expérimental : si un essai est
         # chargé et que la pression injectée est l'historique mesuré, la
@@ -2189,7 +2286,7 @@ with tabs[2]:
             if stored_result is None:
                 st.info("Veuillez d'abord lancer le modèle dans l'onglet 'Sortie modèle' pour afficher l'hystérèse.")
             else:
-                st.warning("Les paramètres ont changé depuis le dernier calcul. Veuillez relancer l'actionnement bloqué pour mettre l'hystérèse à jour.")
+                st.warning(stale_result_message(stored_result, "l'actionnement bloqué pour mettre l'hystérèse à jour"))
         else:
             try:
                 config = result["config"]
@@ -2327,7 +2424,7 @@ with tabs[3]:
         if stored_relaxation_result is None:
             st.info("Veuillez lancer la relaxation pour afficher les courbes de maintien à pression constante.")
         else:
-            st.warning("Les paramètres ont changé depuis le dernier calcul. Veuillez relancer la relaxation pour mettre les courbes à jour.")
+            st.warning(stale_result_message(stored_relaxation_result, "la relaxation pour mettre les courbes à jour"))
     else:
         relaxation_data = relaxation_result["data"]
         hold_start_index = int(relaxation_data["hold_start_index"])
@@ -2407,7 +2504,7 @@ with tabs[4]:
         if stored_prestrain_result is None:
             st.info("Veuillez lancer l'étude pour afficher la force maximale en fonction de la précontrainte initiale.")
         else:
-            st.warning("Les paramètres ont changé depuis le dernier calcul. Veuillez relancer l'étude pour mettre la courbe à jour.")
+            st.warning(stale_result_message(stored_prestrain_result, "l'étude pour mettre la courbe à jour"))
     else:
         study_data = prestrain_result["data"]
         best_index = int(np.nanargmax(study_data["force_max_mN"]))
@@ -2537,7 +2634,7 @@ with tabs[5]:
         if stored_suspended_result is None:
             st.info("Veuillez lancer le calcul pour afficher l'actionnement libre sous masse suspendue.")
         else:
-            st.warning("Les paramètres ont changé depuis le dernier calcul. Veuillez relancer le calcul masse suspendue pour mettre les courbes à jour.")
+            st.warning(stale_result_message(stored_suspended_result, "le calcul masse suspendue pour mettre les courbes à jour"))
     else:
         suspended_data = suspended_result["data"]
         render_metric_grid(
