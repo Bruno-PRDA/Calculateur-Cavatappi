@@ -1,5 +1,21 @@
 # Notes de version
 
+## 2026.09.25 — Barre latérale : changements consécutifs conservés (interface)
+
+- Défaut corrigé, antérieur à l'export des champs. Quand on changeait deux
+  fois de suite le même réglage de la barre latérale, le second changement
+  était perdu (le premier et le troisième étaient pris). Les widgets
+  n'avaient pas de clé : leur valeur par défaut, relue dans les réglages
+  enregistrés, entrait dans leur identité Streamlit, qui changeait donc après
+  chaque enregistrement.
+- Les 75 widgets de la barre latérale ont maintenant une clé stable
+  (`sb_<réglage>`) ; dans Streamlit 1.58, l'identité d'un widget à clé ne
+  dépend plus de sa valeur par défaut. Les sélecteurs de colonnes et d'unité
+  du CSV de pression mesurée ont une clé propre au fichier : un nouveau
+  fichier repart des colonnes déduites automatiquement.
+- L'import de réglages et la réinitialisation fonctionnent comme avant : ils
+  effacent l'état des widgets puis relancent la page. Moteur inchangé.
+
 ## 2026.09.25 — Grilles de temps sans quasi-doublon (moteur `2026.09.25-v4-18`)
 
 - Défaut corrigé, présent au moins depuis v4-16. Les grilles de temps

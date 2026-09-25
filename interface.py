@@ -973,12 +973,12 @@ with st.sidebar.expander("Géométrie", expanded=False):
             "La mise à jour hélicoïdale conserve la section initiale ; le mode évolutif actualise aussi les rayons et l'orientation du matériau.",
         ]
     )
-    rout_mm = st.number_input("Rayon extérieur du tube Rout (mm)", 0.05, 5.0, float(settings["rout_mm"]), 0.05)
-    rin_mm = st.number_input("Rayon intérieur du tube Rin (mm)", 0.01, 4.0, float(settings["rin_mm"]), 0.05)
-    nylon_diameter_mm = st.number_input("Diamètre du nylon (mm)", 0.01, 4.0, float(settings["nylon_diameter_mm"]), 0.01)
-    rho0_mm = st.number_input("Rayon de ligne centrale rho0 (mm)", 0.05, 10.0, float(settings["rho0_mm"]), 0.05)
-    alpha0_deg = st.number_input("Angle hélicoïdal initial alpha0 (deg)", 0.1, 85.0, float(settings["alpha0_deg"]), 0.1)
-    theta_f_deg = st.number_input("Angle de biais du tube theta_f (deg)", 0.0, 89.0, float(settings["theta_f_deg"]), 0.1)
+    rout_mm = st.number_input("Rayon extérieur du tube Rout (mm)", 0.05, 5.0, float(settings["rout_mm"]), 0.05, key="sb_rout_mm")
+    rin_mm = st.number_input("Rayon intérieur du tube Rin (mm)", 0.01, 4.0, float(settings["rin_mm"]), 0.05, key="sb_rin_mm")
+    nylon_diameter_mm = st.number_input("Diamètre du nylon (mm)", 0.01, 4.0, float(settings["nylon_diameter_mm"]), 0.01, key="sb_nylon_diameter_mm")
+    rho0_mm = st.number_input("Rayon de ligne centrale rho0 (mm)", 0.05, 10.0, float(settings["rho0_mm"]), 0.05, key="sb_rho0_mm")
+    alpha0_deg = st.number_input("Angle hélicoïdal initial alpha0 (deg)", 0.1, 85.0, float(settings["alpha0_deg"]), 0.1, key="sb_alpha0_deg")
+    theta_f_deg = st.number_input("Angle de biais du tube theta_f (deg)", 0.0, 89.0, float(settings["theta_f_deg"]), 0.1, key="sb_theta_f_deg")
     bias_angle_profile = st.selectbox(
         "Profil radial de l'angle de biais",
         BIAS_ANGLE_PROFILE_OPTIONS,
@@ -988,9 +988,11 @@ with st.sidebar.expander("Géométrie", expanded=False):
             "La variation linéaire fait évoluer l'angle de biais proportionnellement au rayon. "
             "La loi en tangente représente un taux de torsion uniforme dans le tube droit."
         ),
+        key="sb_bias_angle_profile",
     )
     initial_length_mm = st.number_input(
-        "Longueur hélicoïdale active initiale (mm)", 1.0, 500.0, float(settings["initial_length_mm"]), 0.5
+        "Longueur hélicoïdale active initiale (mm)", 1.0, 500.0, float(settings["initial_length_mm"]), 0.5,
+        key="sb_initial_length_mm",
     )
     uncoiled_length_mm = st.number_input(
         "Longueur totale désenroulée aux extrémités (mm)",
@@ -1002,6 +1004,7 @@ with st.sidebar.expander("Géométrie", expanded=False):
             "Somme des longueurs non hélicoïdales aux deux extrémités. Elles ne produisent pas "
             "d'actionnement, mais leur élasticité réduit la force transmise en blocage."
         ),
+        key="sb_uncoiled_length_mm",
     )
     uncoiled_compliance_mode = st.selectbox(
         "Modèle mécanique des extrémités",
@@ -1015,12 +1018,14 @@ with st.sidebar.expander("Géométrie", expanded=False):
             "Traction et flexion : modèle de poutre composite tube/nylon au raccord tangent à la spire. "
             "Traction axiale : modèle de barre composite alignée avec l'axe, nettement plus rigide."
         ),
+        key="sb_uncoiled_compliance_mode",
     )
     section_update_mode = st.selectbox(
         "Mise à jour de la section du tube",
         SECTION_UPDATE_OPTIONS,
         index=option_index(SECTION_UPDATE_OPTIONS, settings.get("section_update_mode", "fixed")),
         format_func=lambda value: SECTION_UPDATE_LABELS.get(value, value),
+        key="sb_section_update_mode",
     )
 
 uploaded_pressure_payload = None
@@ -1044,12 +1049,13 @@ with st.sidebar.expander("Pression et actionnement", expanded=True):
         PRESSURE_INPUT_OPTIONS,
         index=option_index(PRESSURE_INPUT_OPTIONS, settings.get("pressure_input_mode", "generated")),
         format_func=lambda value: PRESSURE_INPUT_LABELS.get(value, value),
+        key="sb_pressure_input_mode",
     )
-    eps = st.slider("Précontrainte initiale", 0.0, 1.5, float(settings["eps"]), 0.05)
-    p_max_mpa = st.slider("Pression maximale (MPa)", 0.0, 1.5, min(float(settings["p_max_mpa"]), 1.5), 0.05)
-    n_cycles = st.slider("Cycles", 1, 60, int(settings["n_cycles"]), 1)
-    use_fixed_duration = st.checkbox("Utiliser une durée totale fixe", bool(settings["use_fixed_duration"]))
-    duration_s = st.number_input("Durée totale (s)", 1.0, 5000.0, float(settings["duration_s"]), 10.0)
+    eps = st.slider("Précontrainte initiale", 0.0, 1.5, float(settings["eps"]), 0.05, key="sb_eps")
+    p_max_mpa = st.slider("Pression maximale (MPa)", 0.0, 1.5, min(float(settings["p_max_mpa"]), 1.5), 0.05, key="sb_p_max_mpa")
+    n_cycles = st.slider("Cycles", 1, 60, int(settings["n_cycles"]), 1, key="sb_n_cycles")
+    use_fixed_duration = st.checkbox("Utiliser une durée totale fixe", bool(settings["use_fixed_duration"]), key="sb_use_fixed_duration")
+    duration_s = st.number_input("Durée totale (s)", 1.0, 5000.0, float(settings["duration_s"]), 10.0, key="sb_duration_s")
     pressure_rate_mpa_s = st.number_input(
         "Vitesse de pression (MPa/s)",
         0.0005,
@@ -1062,6 +1068,7 @@ with st.sidebar.expander("Pression et actionnement", expanded=True):
             "Les rampes du banc valent 0,01 à 0,06 MPa/s ; le protocole de l'article (10 mL/min, 1,5 mL) "
             "correspond à Pmax / 9 s, soit 0,167 MPa/s à 1,5 MPa."
         ),
+        key="sb_pressure_rate_mpa_s",
     )
     if not use_fixed_duration and float(p_max_mpa) > 0.0:
         st.caption(
@@ -1072,17 +1079,20 @@ with st.sidebar.expander("Pression et actionnement", expanded=True):
         "Profil de pression phénoménologique non linéaire",
         bool(settings["nonlinear_pressure"]),
         help="Ce profil utilise des exposants empiriques. Pour un protocole contrôlé, conservez le profil linéaire.",
+        key="sb_nonlinear_pressure",
     )
     st.markdown("**Affichage des courbes temporelles**")
     show_temporal_torque = st.checkbox(
         "Afficher le couple",
         bool(settings["show_temporal_torque"]),
         help="Ajoute le couple d'actionnement aux courbes temporelles.",
+        key="sb_show_temporal_torque",
     )
     overlay_temporal_pressure = st.checkbox(
         "Superposer la pression et la force",
         bool(settings["overlay_temporal_pressure"]),
         help="Affiche la pression sur un second axe vertical du graphique de force.",
+        key="sb_overlay_temporal_pressure",
     )
     experimental_overlay_single_graph = st.checkbox(
         "Superposer l'essai expérimental sur le graphe principal",
@@ -1093,6 +1103,7 @@ with st.sidebar.expander("Pression et actionnement", expanded=True):
             "simulation et mesure sur un seul graphe (pression sur l'axe secondaire, "
             "couple masqué). Décochée : l'essai reste sur un graphique distinct."
         ),
+        key="sb_experimental_overlay_single_graph",
     )
     if use_fixed_duration:
         st.caption(
@@ -1125,11 +1136,13 @@ with st.sidebar.expander("Pression et actionnement", expanded=True):
                     "Colonne de temps",
                     uploaded_headers,
                     index=option_index(uploaded_headers, default_time),
+                    key=f"sb_measured_pressure_time_column_{measured_pressure_file_hash[:12]}",
                 )
                 measured_pressure_column = st.selectbox(
                     "Colonne de pression",
                     uploaded_headers,
                     index=option_index(uploaded_headers, default_pressure),
+                    key=f"sb_measured_pressure_column_{measured_pressure_file_hash[:12]}",
                 )
                 unit_options = ["MPa", "bar", "kPa", "psi"]
                 inferred_unit = infer_pressure_unit(measured_pressure_column)
@@ -1140,10 +1153,12 @@ with st.sidebar.expander("Pression et actionnement", expanded=True):
                     "Unité de pression du fichier",
                     unit_options,
                     index=option_index(unit_options, selected_unit),
+                    key=f"sb_measured_pressure_unit_{measured_pressure_file_hash[:12]}",
                 )
                 measured_pressure_subtract_initial = st.checkbox(
                     "Soustraire le zéro initial du capteur",
                     measured_pressure_subtract_initial,
+                    key="sb_measured_pressure_subtract_initial",
                 )
                 uploaded_pressure_payload = measured_pressure_payload(
                     uploaded_columns,
@@ -1172,13 +1187,14 @@ with st.sidebar.expander("Masse suspendue"):
             "La pression peut monter à vitesse imposée puis redescendre, ou rester maintenue pour observer la relaxation libre.",
         ]
     )
-    suspended_mass_g = st.number_input("Masse suspendue (g)", 0.1, 5000.0, max(float(settings["suspended_mass_g"]), 0.1), 10.0)
+    suspended_mass_g = st.number_input("Masse suspendue (g)", 0.1, 5000.0, max(float(settings["suspended_mass_g"]), 0.1), 10.0, key="sb_suspended_mass_g")
     suspended_duration_s = st.number_input(
         "Durée de simulation masse suspendue (s)",
         0.1,
         5000.0,
         float(settings["suspended_duration_s"]),
         5.0,
+        key="sb_suspended_duration_s",
     )
     suspended_pressure_rate_mpa_s = st.number_input(
         "Vitesse d'actionnement masse suspendue (MPa/s)",
@@ -1186,10 +1202,12 @@ with st.sidebar.expander("Masse suspendue"):
         10.0,
         float(settings["suspended_pressure_rate_mpa_s"]),
         0.01,
+        key="sb_suspended_pressure_rate_mpa_s",
     )
     suspended_hold_pressure = st.checkbox(
         "Maintenir la pression après la rampe",
         bool(settings["suspended_hold_pressure"]),
+        key="sb_suspended_hold_pressure",
     )
     suspended_equilibrate_before_pressure = st.checkbox(
         "Stabiliser l'actionneur sous la masse avant la pression",
@@ -1198,10 +1216,12 @@ with st.sidebar.expander("Masse suspendue"):
             "Calcule d'abord l'équilibre viscoélastique à 0 MPa sous la masse suspendue. "
             "Cette étape évite de confondre la récupération de la précontrainte avec la relaxation due à la pression."
         ),
+        key="sb_suspended_equilibrate_before_pressure",
     )
     suspended_show_geometry_plot = st.checkbox(
         "Ajouter le graphe Rh et beta_h",
         bool(settings.get("suspended_show_geometry_plot", INTERFACE_DEFAULT_SUSPENDED_SHOW_GEOMETRY_PLOT)),
+        key="sb_suspended_show_geometry_plot",
     )
 
 with st.sidebar.expander("Étude de précontrainte"):
@@ -1212,9 +1232,9 @@ with st.sidebar.expander("Étude de précontrainte"):
             "Plus le nombre de valeurs est grand, plus l'étude est précise mais longue à calculer.",
         ]
     )
-    eps_study_min = st.number_input("Précontrainte minimale", 0.0, 3.0, float(settings["eps_study_min"]), 0.05)
-    eps_study_max = st.number_input("Précontrainte maximale", 0.0, 3.0, float(settings["eps_study_max"]), 0.05)
-    eps_study_points = st.slider("Nombre de valeurs de précontrainte", 2, 60, int(settings["eps_study_points"]), 1)
+    eps_study_min = st.number_input("Précontrainte minimale", 0.0, 3.0, float(settings["eps_study_min"]), 0.05, key="sb_eps_study_min")
+    eps_study_max = st.number_input("Précontrainte maximale", 0.0, 3.0, float(settings["eps_study_max"]), 0.05, key="sb_eps_study_max")
+    eps_study_points = st.slider("Nombre de valeurs de précontrainte", 2, 60, int(settings["eps_study_points"]), 1, key="sb_eps_study_points")
 
 with st.sidebar.expander("Hystérèse"):
     sidebar_help(
@@ -1228,6 +1248,7 @@ with st.sidebar.expander("Hystérèse"):
     hysteresis_cycles = st.text_input(
         "Cycles à afficher",
         str(settings.get("hysteresis_cycles", settings.get("hysteresis_cycle", 1))),
+        key="sb_hysteresis_cycles",
     )
     hysteresis_compare_mode = st.selectbox(
         "Comparaison",
@@ -1236,17 +1257,20 @@ with st.sidebar.expander("Hystérèse"):
         if str(settings.get("hysteresis_compare_mode", "current")) in HYSTERESIS_COMPARE_OPTIONS
         else 0,
         format_func=lambda value: HYSTERESIS_COMPARE_LABELS.get(value, value),
+        key="sb_hysteresis_compare_mode",
     )
     if hysteresis_compare_mode == "prestrain":
         hysteresis_prestrain_values = st.text_input(
             "Précontraintes à comparer",
             str(settings.get("hysteresis_prestrain_values", "0.6, 0.8, 1.0")),
+            key="sb_hysteresis_prestrain_values",
         )
         hysteresis_pressure_rates_mpa_s = str(settings.get("hysteresis_pressure_rates_mpa_s", "0.05, 0.10, 0.20"))
     elif hysteresis_compare_mode == "pressure_rate":
         hysteresis_pressure_rates_mpa_s = st.text_input(
             "Vitesses de pression injectée (MPa/s)",
             str(settings.get("hysteresis_pressure_rates_mpa_s", "0.05, 0.10, 0.20")),
+            key="sb_hysteresis_pressure_rates_mpa_s",
         )
         hysteresis_prestrain_values = str(settings.get("hysteresis_prestrain_values", "0.6, 0.8, 1.0"))
     else:
@@ -1263,10 +1287,12 @@ with st.sidebar.expander("Relaxation"):
         ]
     )
     relaxation_ramp_time_s = st.number_input(
-        "Temps de montée en pression (s)", 0.01, 1000.0, float(settings["relaxation_ramp_time_s"]), 1.0
+        "Temps de montée en pression (s)", 0.01, 1000.0, float(settings["relaxation_ramp_time_s"]), 1.0,
+        key="sb_relaxation_ramp_time_s",
     )
     relaxation_hold_time_s = st.number_input(
-        "Temps de maintien à pression constante (s)", 0.0, 5000.0, float(settings["relaxation_hold_time_s"]), 10.0
+        "Temps de maintien à pression constante (s)", 0.0, 5000.0, float(settings["relaxation_hold_time_s"]), 10.0,
+        key="sb_relaxation_hold_time_s",
     )
 
 field_export_mode = str(settings.get("field_export_mode", "none"))
@@ -1286,10 +1312,11 @@ with st.sidebar.expander("Champs de contraintes et déformations"):
         FIELD_EXPORT_OPTIONS,
         index=option_index(FIELD_EXPORT_OPTIONS, field_export_mode),
         format_func=lambda value: FIELD_EXPORT_LABELS.get(value, value),
+        key="sb_field_export_mode",
     )
     if field_export_mode == "every_n":
         field_export_every_n = int(
-            st.number_input("n (itérations Δt entre deux sauvegardes)", 1, 1_000_000, max(1, field_export_every_n), 1)
+            st.number_input("n (itérations Δt entre deux sauvegardes)", 1, 1_000_000, max(1, field_export_every_n), 1, key="sb_field_export_every_n")
         )
 
 E_axial_mpa = float(settings["E_axial_mpa"])
@@ -1345,12 +1372,13 @@ if show_advanced_settings:
                 "La convention du module axial précise si la raideur instantanée vient de la somme des branches de Maxwell.",
             ]
         )
-        E_axial_mpa = st.number_input("Module axial du tube E_axial (MPa)", 0.001, 10000.0, E_axial_mpa, 0.1)
+        E_axial_mpa = st.number_input("Module axial du tube E_axial (MPa)", 0.001, 10000.0, E_axial_mpa, 0.1, key="sb_E_axial_mpa")
         axial_modulus_mode = st.selectbox(
             "Convention du module axial",
             AXIAL_MODULUS_OPTIONS,
             index=option_index(AXIAL_MODULUS_OPTIONS, axial_modulus_mode),
             format_func=lambda value: AXIAL_MODULUS_LABELS.get(value, value),
+            key="sb_axial_modulus_mode",
         )
         maxwell_anisotropy_mode = st.selectbox(
             "Anisotropie de la relaxation",
@@ -1358,11 +1386,12 @@ if show_advanced_settings:
             index=option_index(MAXWELL_ANISOTROPY_OPTIONS, maxwell_anisotropy_mode),
             format_func=lambda value: MAXWELL_ANISOTROPY_LABELS.get(value, value),
             help="Choisit les directions matérielles auxquelles les fractions de relaxation sont appliquées.",
+            key="sb_maxwell_anisotropy_mode",
         )
-        E_radius_mpa = st.number_input("Module radial du tube E_radius (MPa)", 0.001, 10000.0, E_radius_mpa, 0.1)
-        G12_mpa = st.number_input("Module de cisaillement du tube G12 (MPa)", 0.001, 10000.0, G12_mpa, 0.1)
-        nu12 = st.number_input("Coefficient de Poisson nu12", -0.49, 0.49, float(np.clip(nu12, -0.49, 0.49)), 0.005)
-        nu23 = st.number_input("Coefficient de Poisson nu23", -0.49, 0.49, float(np.clip(nu23, -0.49, 0.49)), 0.005)
+        E_radius_mpa = st.number_input("Module radial du tube E_radius (MPa)", 0.001, 10000.0, E_radius_mpa, 0.1, key="sb_E_radius_mpa")
+        G12_mpa = st.number_input("Module de cisaillement du tube G12 (MPa)", 0.001, 10000.0, G12_mpa, 0.1, key="sb_G12_mpa")
+        nu12 = st.number_input("Coefficient de Poisson nu12", -0.49, 0.49, float(np.clip(nu12, -0.49, 0.49)), 0.005, key="sb_nu12")
+        nu23 = st.number_input("Coefficient de Poisson nu23", -0.49, 0.49, float(np.clip(nu23, -0.49, 0.49)), 0.005, key="sb_nu23")
 
     with st.sidebar.expander("Maxwell généralisé"):
         sidebar_help(
@@ -1374,13 +1403,13 @@ if show_advanced_settings:
             ]
         )
         st.caption("Réponse imposée : Maxwell généralisé avec référence de précontrainte élastique.")
-        maxwell_E0_mpa = st.number_input("Ressort permanent E0 (MPa)", 0.0, 10000.0, maxwell_E0_mpa, 0.1)
-        maxwell_E1_mpa = st.number_input("Branche E1 (MPa)", 0.0, 10000.0, maxwell_E1_mpa, 0.1)
-        maxwell_eta1_mpa_s = st.number_input("Viscosité eta1 (MPa·s)", 1.0e-9, 1.0e9, maxwell_eta1_mpa_s, 1.0)
-        maxwell_E2_mpa = st.number_input("Branche E2 (MPa)", 0.0, 10000.0, maxwell_E2_mpa, 0.1)
-        maxwell_eta2_mpa_s = st.number_input("Viscosité eta2 (MPa·s)", 1.0e-9, 1.0e9, maxwell_eta2_mpa_s, 1.0)
-        maxwell_E3_mpa = st.number_input("Branche E3 (MPa)", 0.0, 10000.0, maxwell_E3_mpa, 0.1)
-        maxwell_eta3_mpa_s = st.number_input("Viscosité eta3 (MPa·s)", 1.0e-9, 1.0e9, maxwell_eta3_mpa_s, 1.0)
+        maxwell_E0_mpa = st.number_input("Ressort permanent E0 (MPa)", 0.0, 10000.0, maxwell_E0_mpa, 0.1, key="sb_maxwell_E0_mpa")
+        maxwell_E1_mpa = st.number_input("Branche E1 (MPa)", 0.0, 10000.0, maxwell_E1_mpa, 0.1, key="sb_maxwell_E1_mpa")
+        maxwell_eta1_mpa_s = st.number_input("Viscosité eta1 (MPa·s)", 1.0e-9, 1.0e9, maxwell_eta1_mpa_s, 1.0, key="sb_maxwell_eta1_mpa_s")
+        maxwell_E2_mpa = st.number_input("Branche E2 (MPa)", 0.0, 10000.0, maxwell_E2_mpa, 0.1, key="sb_maxwell_E2_mpa")
+        maxwell_eta2_mpa_s = st.number_input("Viscosité eta2 (MPa·s)", 1.0e-9, 1.0e9, maxwell_eta2_mpa_s, 1.0, key="sb_maxwell_eta2_mpa_s")
+        maxwell_E3_mpa = st.number_input("Branche E3 (MPa)", 0.0, 10000.0, maxwell_E3_mpa, 0.1, key="sb_maxwell_E3_mpa")
+        maxwell_eta3_mpa_s = st.number_input("Viscosité eta3 (MPa·s)", 1.0e-9, 1.0e9, maxwell_eta3_mpa_s, 1.0, key="sb_maxwell_eta3_mpa_s")
 
     with st.sidebar.expander("Nylon"):
         sidebar_help(
@@ -1390,8 +1419,8 @@ if show_advanced_settings:
                 "Le filament est lié aux deux extrémités et participe intégralement à la précontrainte et à l’actionnement.",
             ]
         )
-        E_nylon_mpa = st.number_input("Module axial du nylon E_nylon (MPa)", 0.001, 100000.0, E_nylon_mpa, 10.0)
-        G_nylon_mpa = st.number_input("Module de cisaillement du nylon G_nylon (MPa)", 0.001, 100000.0, G_nylon_mpa, 10.0)
+        E_nylon_mpa = st.number_input("Module axial du nylon E_nylon (MPa)", 0.001, 100000.0, E_nylon_mpa, 10.0, key="sb_E_nylon_mpa")
+        G_nylon_mpa = st.number_input("Module de cisaillement du nylon G_nylon (MPa)", 0.001, 100000.0, G_nylon_mpa, 10.0, key="sb_G_nylon_mpa")
         st.caption("Condition fixe : nylon linéaire bilatéral lié aux extrémités.")
 
     with st.sidebar.expander("Mécanismes Alpha V4 (off par défaut)"):
@@ -1411,6 +1440,7 @@ if show_advanced_settings:
             index=option_index(PRESTRETCH_CONVENTION_OPTIONS, prestretch_convention),
             format_func=lambda value: PRESTRETCH_CONVENTION_LABELS.get(value, value),
             help="Sans extrémités désenroulées, les deux conventions coïncident.",
+            key="sb_prestretch_convention",
         )
         engagement_reform_pressure_mpa = st.number_input(
             "Pression de reformage de la section P_r0 (MPa, 0 = off)", 0.0, 5.0, engagement_reform_pressure_mpa, 0.01, format="%.3f",
@@ -1421,24 +1451,29 @@ if show_advanced_settings:
                 "de la campagne ; le seuil médian mesuré (0,17 MPa) correspond à k·e0 ≈ 0,13. Convention : P_eff "
                 "pilote tout le BVP radial (rayons en mode réactualisé, contraintes de paroi, activation d’Eyring)."
             ),
+            key="sb_engagement_reform_pressure_mpa",
         )
         engagement_unload_ratio = st.number_input(
             "Rapport de décharge r (1 = réversible)", 0.05, 1.0, engagement_unload_ratio, 0.05,
             help="r < 1 : la section reste ronde plus longtemps à la décharge — hystérésis du seuil.",
+            key="sb_engagement_unload_ratio",
         )
         friction_pressure_coulomb_mpa = st.number_input(
             "Pression de Coulomb P_c (MPa, 0 = off)", 0.0, 1.0, friction_pressure_coulomb_mpa, 0.005, format="%.3f",
             help="P_eff = P − P_f avec P_f élément de Jenkins écrêté à ±P_c : retard de P_c en charge, avance de P_c en décharge. En mode bloqué, un patin interne (dw, dv, dκ) n’ouvre aucune boucle — seule la transmission de la pression le peut. Calibration : hystérésis du seuil mesurée 0,038 MPa ≈ 2·P_c.",
+            key="sb_friction_pressure_coulomb_mpa",
         )
         eyring_sigma_star_mpa = st.number_input(
             "Contrainte d’activation d’Eyring σ* (MPa, 0 = off)", 0.0, 1000.0, eyring_sigma_star_mpa, 0.01, format="%.3f",
             help="η_eff = η·(s/σ*)/sinh(s/σ*) par couche et par branche, s = norme de la contrainte de branche. Dans ce modèle les contraintes de branche du tube valent ~0,01-0,05 MPa à la précontrainte : σ* doit être de cet ordre pour agir. Exige l’intégration exponentielle.",
+            key="sb_eyring_sigma_star_mpa",
         )
         anchor_creep_c_mm = st.number_input(
             "Fluage d’ancrage c (mm, 0 = off)", 0.0, 50.0, anchor_creep_c_mm, 0.01,
             help="δ(t) = c·ln(1 + t/t0) depuis le blocage, en série dans la longueur bloquée.",
+            key="sb_anchor_creep_c_mm",
         )
-        anchor_creep_t0_s = st.number_input("Temps de référence du fluage t0 (s)", 0.01, 100000.0, anchor_creep_t0_s, 1.0)
+        anchor_creep_t0_s = st.number_input("Temps de référence du fluage t0 (s)", 0.01, 100000.0, anchor_creep_t0_s, 1.0, key="sb_anchor_creep_t0_s")
 
     with st.sidebar.expander("Solveur"):
         sidebar_help(
@@ -1451,11 +1486,11 @@ if show_advanced_settings:
                 "Les cœurs parallèles accélèrent seulement les études composées de plusieurs simulations indépendantes.",
             ]
         )
-        dt = st.number_input("Pas de temps dt (s)", 0.01, 20.0, dt, 0.05)
-        n_layers = st.slider("Couches radiales du tube", 1, 30, n_layers, 1)
-        n_phi = st.slider("Divisions angulaires phi", 4, 120, n_phi, 4)
-        pre_steps = st.slider("Étapes de précontrainte", 1, 240, pre_steps, 1)
-        parallel_workers = st.slider("Cœurs CPU parallèles", 1, cpu_count, parallel_workers, 1)
+        dt = st.number_input("Pas de temps dt (s)", 0.01, 20.0, dt, 0.05, key="sb_dt")
+        n_layers = st.slider("Couches radiales du tube", 1, 30, n_layers, 1, key="sb_n_layers")
+        n_phi = st.slider("Divisions angulaires phi", 4, 120, n_phi, 4, key="sb_n_phi")
+        pre_steps = st.slider("Étapes de précontrainte", 1, 240, pre_steps, 1, key="sb_pre_steps")
+        parallel_workers = st.slider("Cœurs CPU parallèles", 1, cpu_count, parallel_workers, 1, key="sb_parallel_workers")
         integration = st.selectbox(
             "Intégration temporelle",
             INTEGRATION_OPTIONS,
@@ -1465,6 +1500,7 @@ if show_advanced_settings:
                 "Met à jour chaque contrainte de branche selon dσ_i/dt = E_i dε/dt - σ_i/τ_i, "
                 "avec τ_i = η_i/E_i."
             ),
+            key="sb_integration",
         )
         prestrain_reference_mode = st.selectbox(
             "Précontrainte",
@@ -1481,6 +1517,7 @@ if show_advanced_settings:
                 "fig. 11 d'EXP deviennent simulables ; les niveaux absolus de force "
                 "sont plus bas d'environ 20 %. (audit 2026-08, item 3.2)"
             ),
+            key="sb_prestrain_reference_mode",
         )
         active_tau = [
             eta / modulus
@@ -1507,8 +1544,8 @@ if show_advanced_settings:
                 "Faites glisser pour tourner, utilisez la molette pour zoomer et les flèches du clavier pour orienter la vue.",
             ]
         )
-        view_elev_deg = st.slider("Élévation de vue (deg)", 0.0, 90.0, view_elev_deg, 1.0)
-        view_azim_deg = st.slider("Azimut de vue (deg)", -180.0, 180.0, view_azim_deg, 1.0)
+        view_elev_deg = st.slider("Élévation de vue (deg)", 0.0, 90.0, view_elev_deg, 1.0, key="sb_view_elev_deg")
+        view_azim_deg = st.slider("Azimut de vue (deg)", -180.0, 180.0, view_azim_deg, 1.0, key="sb_view_azim_deg")
 
 current_settings = {
     "_settings_schema_version": SETTINGS_SCHEMA_VERSION,
