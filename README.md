@@ -440,6 +440,15 @@ garder au moins deux instants distincts. L'option de zéro initial soustrait
 uniquement l'offset du capteur au premier échantillon gardé. Un résultat
 enregistré n'est repris que si l'historique lu dans le CSV est celui du calcul.
 
+Seul l'actionnement bloqué utilise ce CSV. La relaxation, l'étude de
+précontrainte, la masse suspendue et la comparaison d'hystérèse suivent
+toujours leur propre profil généré, et sont validées comme en profil généré
+(frottement sec, limite de coût) : passer en CSV mesuré puis revenir au
+profil généré ne périme aucun de leurs résultats, ni celui de l'actionnement
+bloqué calculé en profil généré. Réciproquement, en CSV mesuré, les réglages
+du profil généré (P_max, vitesse, cycles, durée) ne périment pas
+l'actionnement bloqué.
+
 ## Condition du nylon
 
 Alpha V2 utilise uniquement un nylon linéaire bilatéral lié aux extrémités. Il

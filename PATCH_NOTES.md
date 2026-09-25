@@ -1,5 +1,37 @@
 # Notes de version
 
+## 2026.09.25 — Aller-retour profil généré ↔ CSV mesuré (interface)
+
+- Défaut corrigé, antérieur à l'export des champs. La source de pression et
+  les réglages du CSV mesuré (colonnes, unité, empreinte du fichier, zéro
+  initial) entraient dans la signature de tous les résultats enregistrés.
+  Passer en « Historique pression/temps mesuré », avec ou sans fichier, puis
+  revenir au profil généré déclarait périmés l'actionnement bloqué, la
+  relaxation, l'étude de précontrainte, la masse suspendue et la
+  comparaison d'hystérèse, même après redémarrage, alors que rien n'avait
+  changé pour eux.
+- La relaxation, l'étude de précontrainte, la masse suspendue et la
+  comparaison d'hystérèse ignorent ces réglages (`PRESSURE_SOURCE_SETTING_KEYS`) :
+  elles suivent toujours leur propre profil généré. Pour l'actionnement
+  bloqué, les réglages du CSV ne comptent qu'en mode CSV mesuré
+  (`settings_signature`) ; changer de mode périme toujours son résultat.
+- Sens inverse, défaut antérieur lui aussi : en mode CSV mesuré, modifier
+  P_max, la vitesse de pression, les cycles, la durée fixe ou le profil non
+  linéaire (`GENERATED_PROFILE_SETTING_KEYS`) ne périme plus l'actionnement
+  bloqué, qui lit l'historique du fichier (recalcul identique au bit près).
+- Ces quatre calculs sont désormais validés comme en profil généré, même en
+  mode CSV mesuré. Le contrôle du frottement sec (2·P_c ≥ P_max) s'y
+  applique ; la limite de coût de l'étude de précontrainte et de la
+  comparaison d'hystérèse est calculée sur le profil généré qu'elles
+  simulent, et non plus sur la longueur du CSV. Auparavant, le mode mesuré
+  laissait lancer ces calculs dans un régime refusé en profil généré, voire
+  un calcul de plusieurs heures ; l'onglet concerné dit maintenant pourquoi
+  le bouton est désactivé.
+- Les résultats enregistrés par la version précédente restent repris, leur
+  signature étant recalculée depuis leurs réglages ; seule une comparaison
+  d'hystérèse enregistrée, comparée à l'identique, est à relancer une fois.
+  Moteur inchangé.
+
 ## 2026.09.25 — CSV mesurés : temps quasi identiques confondus (lecture des CSV)
 
 - Défaut corrigé, antérieur à l'export des champs. `np.unique` ne retirait

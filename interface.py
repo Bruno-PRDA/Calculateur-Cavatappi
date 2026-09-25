@@ -380,6 +380,28 @@ TEMPORAL_DISPLAY_SETTING_KEYS = {
     "field_export_mode",
     "field_export_every_n",
 }
+# Source de la pression : seul l'actionnement bloqué lit le CSV mesuré, et
+# seulement en mode « measured_csv » (voir settings_signature). Relaxation,
+# précontrainte, masse suspendue et comparaison d'hystérèse suivent toujours
+# leur propre profil généré.
+MEASURED_PRESSURE_SETTING_KEYS = {
+    "measured_pressure_time_column",
+    "measured_pressure_column",
+    "measured_pressure_unit",
+    "measured_pressure_file_hash",
+    "measured_pressure_subtract_initial",
+}
+PRESSURE_SOURCE_SETTING_KEYS = {"pressure_input_mode"} | MEASURED_PRESSURE_SETTING_KEYS
+# Profil généré : sans effet sur l'actionnement bloqué en CSV mesuré, qui lit
+# l'historique du fichier (run_model en déduit aussi le nombre de cycles).
+GENERATED_PROFILE_SETTING_KEYS = {
+    "p_max_mpa",
+    "pressure_rate_mpa_s",
+    "n_cycles",
+    "use_fixed_duration",
+    "duration_s",
+    "nonlinear_pressure",
+}
 BLOCKED_RESULT_IGNORE_KEYS = TEMPORAL_DISPLAY_SETTING_KEYS | {
     "eps_study_min",
     "eps_study_max",
@@ -401,7 +423,7 @@ BLOCKED_RESULT_IGNORE_KEYS = TEMPORAL_DISPLAY_SETTING_KEYS | {
     "view_elev_deg",
     "view_azim_deg",
 }
-RELAXATION_RESULT_IGNORE_KEYS = TEMPORAL_DISPLAY_SETTING_KEYS | {
+RELAXATION_RESULT_IGNORE_KEYS = TEMPORAL_DISPLAY_SETTING_KEYS | PRESSURE_SOURCE_SETTING_KEYS | {
     "eps_study_min",
     "eps_study_max",
     "eps_study_points",
@@ -424,7 +446,7 @@ RELAXATION_RESULT_IGNORE_KEYS = TEMPORAL_DISPLAY_SETTING_KEYS | {
     "view_elev_deg",
     "view_azim_deg",
 }
-PRESTRAIN_RESULT_IGNORE_KEYS = TEMPORAL_DISPLAY_SETTING_KEYS | {
+PRESTRAIN_RESULT_IGNORE_KEYS = TEMPORAL_DISPLAY_SETTING_KEYS | PRESSURE_SOURCE_SETTING_KEYS | {
     "eps",
     "hysteresis_cycle",
     "hysteresis_cycles",
@@ -443,7 +465,7 @@ PRESTRAIN_RESULT_IGNORE_KEYS = TEMPORAL_DISPLAY_SETTING_KEYS | {
     "view_elev_deg",
     "view_azim_deg",
 }
-SUSPENDED_RESULT_IGNORE_KEYS = TEMPORAL_DISPLAY_SETTING_KEYS | {
+SUSPENDED_RESULT_IGNORE_KEYS = TEMPORAL_DISPLAY_SETTING_KEYS | PRESSURE_SOURCE_SETTING_KEYS | {
     "eps_study_min",
     "eps_study_max",
     "eps_study_points",
@@ -464,7 +486,7 @@ SUSPENDED_RESULT_IGNORE_KEYS = TEMPORAL_DISPLAY_SETTING_KEYS | {
     "view_elev_deg",
     "view_azim_deg",
 }
-HYSTERESIS_COMPARE_IGNORE_KEYS = TEMPORAL_DISPLAY_SETTING_KEYS | {
+HYSTERESIS_COMPARE_IGNORE_KEYS = TEMPORAL_DISPLAY_SETTING_KEYS | PRESSURE_SOURCE_SETTING_KEYS | {
     "eps_study_min",
     "eps_study_max",
     "eps_study_points",
@@ -517,7 +539,11 @@ def parse_positive_float_list(text: object, max_count: int = 8) -> list[float]:
 
 
 def settings_signature(settings: dict[str, SettingValue], ignore_keys: set[str] | None = None) -> tuple[tuple[str, str], ...]:
-    ignored = ignore_keys or set()
+    ignored = set(ignore_keys or ())
+    if str(settings.get("pressure_input_mode", "generated")) != "measured_csv":
+        # Profil généré : les colonnes, l'unité et l'empreinte d'un CSV chargé
+        # auparavant ne changent pas le calcul (aller-retour généré ↔ mesuré).
+        ignored |= MEASURED_PRESSURE_SETTING_KEYS
     settings_items = tuple(
         sorted(
             (key, str(value))
@@ -1663,6 +1689,19 @@ current_settings = {
 error = settings_error(current_settings)
 if error is None:
     save_settings(current_settings)
+# Relaxation, précontrainte, masse suspendue et comparaison d'hystérèse suivent
+# toujours leur profil généré : elles sont validées comme en profil généré, même
+# quand l'actionnement bloqué lit un CSV mesuré (contrôle du frottement sec).
+generated_profile_error = (
+    settings_error({**current_settings, "pressure_input_mode": "generated"})
+    if pressure_input_mode == "measured_csv"
+    else error
+)
+generated_profile_notice = (
+    f"Ce calcul suit le profil généré, que ces réglages refusent. {generated_profile_error}"
+    if generated_profile_error is not None and error is None
+    else None
+)
 
 with settings_actions:
     with st.expander("Importer ou exporter les paramètres", expanded=False):
@@ -1775,19 +1814,24 @@ if str(integration) == "paper_explicit":
             "Euler reste éventuellement stable sous 2 tau, mais peut osciller ; l'intégration exponentielle est recommandée."
         )
 
+if bool(use_fixed_duration):
+    generated_duration_s = float(duration_s)
+else:
+    generated_duration_s = int(n_cycles) * 2.0 * modele.resolve_half_period(float(p_max_mpa), pressure_rate_mpa_s=float(pressure_rate_mpa_s))
+generated_steps = int(np.ceil(generated_duration_s / dt))
 if pressure_input_mode == "measured_csv" and uploaded_pressure_payload is not None:
     estimated_duration_s = float(uploaded_pressure_payload["time"][-1])
     estimated_steps = max(1, len(uploaded_pressure_payload["time"]) - 1)
-elif bool(use_fixed_duration):
-    estimated_duration_s = float(duration_s)
-    estimated_steps = int(np.ceil(estimated_duration_s / dt))
 else:
-    estimated_duration_s = int(n_cycles) * 2.0 * modele.resolve_half_period(float(p_max_mpa), pressure_rate_mpa_s=float(pressure_rate_mpa_s))
-    estimated_steps = int(np.ceil(estimated_duration_s / dt))
+    estimated_duration_s = generated_duration_s
+    estimated_steps = generated_steps
 estimated_cost = model_cost_index(estimated_steps, n_layers, n_phi, pre_steps)
+# L'étude de précontrainte et la comparaison d'hystérèse simulent le profil
+# généré, même quand l'actionnement bloqué lit un CSV mesuré.
+generated_cost = model_cost_index(generated_steps, n_layers, n_phi, pre_steps)
 estimated_relaxation_steps = int(np.ceil((relaxation_ramp_time_s + relaxation_hold_time_s) / dt))
 estimated_relaxation_cost = model_cost_index(estimated_relaxation_steps, n_layers, n_phi, pre_steps)
-estimated_prestrain_cost = estimated_cost * int(eps_study_points)
+estimated_prestrain_cost = generated_cost * int(eps_study_points)
 estimated_suspended_steps = int(np.ceil(float(suspended_duration_s) / dt)) + (
     5 if bool(suspended_equilibrate_before_pressure) else 0
 )
@@ -1807,7 +1851,7 @@ selected_hysteresis_cycles = parse_cycle_list(current_settings["hysteresis_cycle
 hysteresis_prestrain_compare_values = parse_positive_float_list(current_settings["hysteresis_prestrain_values"])
 hysteresis_pressure_rate_values = parse_positive_float_list(current_settings["hysteresis_pressure_rates_mpa_s"])
 if hysteresis_compare_mode == "prestrain":
-    estimated_hysteresis_compare_cost = estimated_cost * max(1, len(hysteresis_prestrain_compare_values))
+    estimated_hysteresis_compare_cost = generated_cost * max(1, len(hysteresis_prestrain_compare_values))
 elif hysteresis_compare_mode == "pressure_rate":
     estimated_hysteresis_compare_cost = sum(
         model_cost_index(
@@ -1839,8 +1883,11 @@ else:
         parallel_worker_count,
         estimated_hysteresis_parallel_factor,
     )
-hysteresis_compare_disabled = error is not None or estimated_hysteresis_compare_cost > 750_000
-blocked_result_signature = settings_signature(current_settings, BLOCKED_RESULT_IGNORE_KEYS)
+hysteresis_compare_disabled = generated_profile_error is not None or estimated_hysteresis_compare_cost > 750_000
+blocked_ignore_keys = BLOCKED_RESULT_IGNORE_KEYS | (
+    GENERATED_PROFILE_SETTING_KEYS if pressure_input_mode == "measured_csv" else set()
+)
+blocked_result_signature = settings_signature(current_settings, blocked_ignore_keys)
 relaxation_result_signature = settings_signature(current_settings, RELAXATION_RESULT_IGNORE_KEYS)
 prestrain_result_signature = settings_signature(current_settings, PRESTRAIN_RESULT_IGNORE_KEYS)
 suspended_result_signature = settings_signature(current_settings, SUSPENDED_RESULT_IGNORE_KEYS)
@@ -1856,10 +1903,10 @@ hysteresis_comparison_signature = (
 
 missing_measured_pressure = pressure_input_mode == "measured_csv" and uploaded_pressure_payload is None
 run_disabled = error is not None or estimated_cost > 250_000 or missing_measured_pressure
-relaxation_run_disabled = error is not None or estimated_relaxation_cost > 250_000
-suspended_run_disabled = error is not None or estimated_suspended_cost > 250_000
+relaxation_run_disabled = generated_profile_error is not None or estimated_relaxation_cost > 250_000
+suspended_run_disabled = generated_profile_error is not None or estimated_suspended_cost > 250_000
 prestrain_range_error = float(eps_study_max) <= float(eps_study_min)
-prestrain_study_run_disabled = error is not None or prestrain_range_error or estimated_prestrain_cost > 750_000
+prestrain_study_run_disabled = generated_profile_error is not None or prestrain_range_error or estimated_prestrain_cost > 750_000
 
 st.markdown(
     (
@@ -1945,7 +1992,7 @@ if run_blocked_now:
 # Hystérèse : mêmes réglages et, en CSV mesuré, même historique lu. Un fichier
 # chargé mais refusé par la lecture ne reprend pas le résultat enregistré.
 blocked_settings_match = result_matches_settings(
-    st.session_state["calculator_result"], blocked_result_signature, BLOCKED_RESULT_IGNORE_KEYS
+    st.session_state["calculator_result"], blocked_result_signature, blocked_ignore_keys
 )
 blocked_result_current = (
     blocked_settings_match
@@ -2361,7 +2408,7 @@ with tabs[2]:
         if estimated_hysteresis_compare_cost > 120_000 and not hysteresis_compare_disabled:
             st.warning("Cette comparaison peut être lente. Réduisez le nombre de valeurs, augmentez le pas de temps ou réduisez le maillage.")
         if hysteresis_compare_disabled and error is None:
-            st.warning("Cette comparaison d'hystérèse est trop lourde pour l'interface interactive.")
+            st.warning(generated_profile_notice or "Cette comparaison d'hystérèse est trop lourde pour l'interface interactive.")
 
         if st.button("Calculer la comparaison d'hystérèse", disabled=hysteresis_compare_disabled or not comparison_values):
             comparison_result, elapsed_s = run_hysteresis_comparison_with_progress(
@@ -2430,7 +2477,7 @@ with tabs[3]:
     if estimated_relaxation_cost > 120_000 and not relaxation_run_disabled:
         st.warning("La relaxation peut être lente. Augmentez le pas de temps, réduisez le maintien ou réduisez le maillage.")
     if relaxation_run_disabled and error is None:
-        st.warning("Les réglages de relaxation sont trop lourds pour l'interface interactive.")
+        st.warning(generated_profile_notice or "Les réglages de relaxation sont trop lourds pour l'interface interactive.")
 
     if st.button("Calculer la relaxation à pression constante", disabled=relaxation_run_disabled):
         (config, data, summary), elapsed_s = run_with_progress(
@@ -2509,7 +2556,7 @@ with tabs[4]:
     if prestrain_range_error:
         st.warning("La précontrainte maximale doit être strictement supérieure à la précontrainte minimale.")
     elif prestrain_study_run_disabled and error is None:
-        st.warning("Les réglages de l'étude de précontrainte sont trop lourds pour l'interface interactive.")
+        st.warning(generated_profile_notice or "Les réglages de l'étude de précontrainte sont trop lourds pour l'interface interactive.")
 
     if st.button("Calculer l'étude force max / précontrainte", disabled=prestrain_study_run_disabled):
         eps_values = np.linspace(float(eps_study_min), float(eps_study_max), int(eps_study_points))
@@ -2640,7 +2687,7 @@ with tabs[5]:
     if estimated_suspended_cost > 120_000 and not suspended_run_disabled:
         st.warning("Le mode masse suspendue peut être lent. Augmentez le pas de temps ou réduisez le maillage.")
     if suspended_run_disabled and error is None:
-        st.warning("Les réglages du mode masse suspendue sont trop lourds pour l'interface interactive.")
+        st.warning(generated_profile_notice or "Les réglages du mode masse suspendue sont trop lourds pour l'interface interactive.")
 
     if st.button("Calculer l'actionnement avec masse suspendue", disabled=suspended_run_disabled):
         (config, data, summary), elapsed_s = run_with_progress(
