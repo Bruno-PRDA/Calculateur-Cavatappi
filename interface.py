@@ -213,9 +213,12 @@ def render_field_section(
     )
     with expander:
         if field_export_label(used) != field_export_label(requested):
-            st.info(
+            source = {"fields_blocked": "actionnement bloqué", "fields_relaxation": "relaxation"}.get(key, "masse suspendue")
+            notify(
+                "info",
+                f"Champs σ/ε ({source})",
                 f"Ce calcul a été fait avec l’export « {field_export_label(used)} » ; "
-                f"relancez-le pour appliquer « {field_export_label(requested)} »."
+                f"relancez-le pour appliquer « {field_export_label(requested)} ».",
             )
         if fields is None:
             if requested.enabled:
@@ -353,8 +356,110 @@ def parse_settings_csv(payload: bytes) -> dict[str, SettingValue]:
 
 
 def clear_widget_state() -> None:
+    kept = {key: st.session_state[key] for key in (JOURNAL_KEY, CURRENT_ERRORS_KEY) if key in st.session_state}
     for key in list(st.session_state):
         del st.session_state[key]
+    st.session_state.update(kept)  # l'historique survit à l'import et à la réinitialisation
+
+
+# Messages de la page : rassemblés pendant l'affichage et montrés dans l'onglet
+# « Log / Info », résumés à côté du bouton de calcul. L'historique de la session
+# (calculs, erreurs, imports, réinitialisations) survit aux réaffichages.
+PAGE_MESSAGES: list[tuple[str, str, str]] = []
+JOURNAL_KEY = "_journal"
+JOURNAL_MAX_ENTRIES = 200
+# Erreurs affichées à l'affichage précédent et à l'affichage en cours : une
+# erreur qui persiste n'est inscrite qu'une fois, une erreur qui revient l'est à
+# nouveau.
+PREVIOUS_ERRORS_KEY = "_erreurs_precedentes"
+CURRENT_ERRORS_KEY = "_erreurs_affichees"
+MESSAGE_KINDS = {"error": "Erreur", "warning": "Avertissement", "success": "Terminé", "info": "Info"}
+
+
+def start_page_messages() -> None:
+    PAGE_MESSAGES.clear()
+    st.session_state[PREVIOUS_ERRORS_KEY] = st.session_state.get(CURRENT_ERRORS_KEY, set())
+    st.session_state[CURRENT_ERRORS_KEY] = set()
+
+
+def log_event(kind: str, source: str, text: str) -> None:
+    """Ajoute une ligne à l'historique de la session (événement ponctuel :
+    calcul terminé ou interrompu, import, réinitialisation…)."""
+    journal = st.session_state.setdefault(JOURNAL_KEY, [])
+    journal.append({"heure": datetime.now().strftime("%H:%M:%S"), "type": kind, "origine": source, "message": text})
+    del journal[:-JOURNAL_MAX_ENTRIES]
+
+
+def notify(kind: str, source: str, text: str) -> None:
+    """Message de la page, affiché dans l'onglet « Log / Info ». Un succès entre
+    dans l'historique ; une erreur aussi, si elle n'était pas déjà affichée à
+    l'affichage précédent."""
+    if (kind, source, text) in PAGE_MESSAGES:
+        return
+    PAGE_MESSAGES.append((kind, source, text))
+    if kind == "success":
+        log_event(kind, source, text)
+    elif kind == "error":
+        shown = st.session_state.setdefault(CURRENT_ERRORS_KEY, set())
+        if (source, text) not in st.session_state.get(PREVIOUS_ERRORS_KEY, set()) and (source, text) not in shown:
+            log_event(kind, source, text)
+        shown.add((source, text))
+
+
+def render_page_messages() -> None:
+    for kind in MESSAGE_KINDS:
+        for message_kind, source, text in PAGE_MESSAGES:
+            if message_kind == kind:
+                getattr(st, kind)(f"**{source}** — {text}")
+
+
+def stop_after_failure(progress, label: str, exc: Exception) -> None:
+    """Calcul interrompu : la page s'arrête ici, avant l'onglet « Log / Info ».
+    L'erreur et les messages déjà rassemblés s'affichent donc sur place, et
+    l'interruption entre dans l'historique."""
+    progress.empty()
+    log_event("error", label, f"Interrompu : {exc}")
+    st.error(f"{label} interrompu : {exc}")
+    render_page_messages()
+    st.stop()
+
+
+def render_message_summary(slot) -> None:
+    """Résumé des messages à côté du bouton de calcul."""
+    counts = {kind: sum(1 for message in PAGE_MESSAGES if message[0] == kind) for kind in MESSAGE_KINDS}
+    words = {"error": ("erreur", "erreurs"), "warning": ("avertissement", "avertissements"),
+             "success": ("succès", "succès"), "info": ("info", "infos")}
+    parts = [f"{counts[kind]} {words[kind][counts[kind] > 1]}" for kind in MESSAGE_KINDS if counts[kind]]
+    with slot.container():
+        if parts:
+            text = f"{', '.join(parts)} : voir l’onglet « Log / Info »."
+            kind = next(kind for kind in MESSAGE_KINDS if counts[kind])
+            getattr(st, kind)(text[0].upper() + text[1:])
+        st.caption("Les résultats seront conservés et réaffichés au prochain démarrage.")
+
+
+def render_log_tab() -> None:
+    st.markdown("**Messages pour les réglages actuels**")
+    if not PAGE_MESSAGES:
+        st.caption("Aucun message.")
+    render_page_messages()
+    st.markdown("**Historique de la session**")
+    journal = st.session_state.get(JOURNAL_KEY, [])
+    if not journal:
+        st.caption("Aucun événement depuis l’ouverture de la page.")
+        return
+    st.dataframe(
+        [
+            {"Heure": entry["heure"], "Type": MESSAGE_KINDS.get(entry["type"], entry["type"]),
+             "Origine": entry["origine"], "Message": entry["message"]}
+            for entry in reversed(journal)
+        ],
+        hide_index=True,
+        width="stretch",
+    )
+    if st.button("Effacer l’historique", key="clear_journal"):
+        st.session_state[JOURNAL_KEY] = []
+        st.rerun()
 
 
 def render_metric_grid(items: list[tuple[str, str]]) -> None:
@@ -641,7 +746,6 @@ def make_suspended_response_figure(data: dict[str, np.ndarray], show_geometry: b
 
 def run_with_progress(label: str, estimated_seconds: float, function, *args):
     progress = st.progress(0, text=f"{label} : démarrage")
-    status = st.empty()
     start = time.perf_counter()
     estimated_seconds = max(0.1, float(estimated_seconds))
 
@@ -664,15 +768,14 @@ def run_with_progress(label: str, estimated_seconds: float, function, *args):
         try:
             result = future.result()
         except Exception as exc:
-            progress.empty()
-            status.error(f"{label} interrompu : {exc}")
-            st.stop()
+            stop_after_failure(progress, label, exc)
 
     elapsed = time.perf_counter() - start
     progress.empty()
-    status.success(
-        f"{label} terminé en {format_seconds(elapsed)} "
-        f"(estimation initiale : {format_seconds(estimated_seconds)})."
+    notify(
+        "success",
+        label,
+        f"Terminé en {format_seconds(elapsed)} (estimation initiale : {format_seconds(estimated_seconds)}).",
     )
     return result, elapsed
 
@@ -767,7 +870,6 @@ def run_prestrain_study_with_progress(
     eps_values = np.asarray(eps_values, dtype=float)
     total = len(eps_values)
     progress = st.progress(0, text="Étude de précontrainte : démarrage")
-    status = st.empty()
     start = time.perf_counter()
     worker_count = max(1, min(int(parallel_workers), total))
 
@@ -788,9 +890,12 @@ def run_prestrain_study_with_progress(
 
     def run_sequential() -> list[dict[str, float]]:
         rows_seq = []
-        for index, eps_value in enumerate(eps_values, start=1):
-            update_progress(index - 1, f"précontrainte = {eps_value:.3f}")
-            rows_seq.append(run_prestrain_case(dict(settings), float(eps_value)))
+        try:
+            for index, eps_value in enumerate(eps_values, start=1):
+                update_progress(index - 1, f"précontrainte = {eps_value:.3f}")
+                rows_seq.append(run_prestrain_case(dict(settings), float(eps_value)))
+        except Exception as exc:
+            stop_after_failure(progress, "Étude de précontrainte", exc)
         return rows_seq
 
     if worker_count <= 1:
@@ -809,14 +914,18 @@ def run_prestrain_study_with_progress(
                     update_progress(done, f"précontrainte = {eps_value:.3f} | {worker_count} cœurs")
             rows.sort(key=lambda row: row["eps"])
         except Exception as exc:
-            st.warning(f"Calcul parallèle indisponible ({exc}). Repli en calcul séquentiel.")
+            fallback = f"Calcul parallèle indisponible ({exc}). Repli en calcul séquentiel."
+            notify("warning", "Étude de précontrainte", fallback)
+            log_event("warning", "Étude de précontrainte", fallback)
             rows = run_sequential()
 
     elapsed = time.perf_counter() - start
     progress.empty()
-    status.success(
+    notify(
+        "success",
+        "Étude de précontrainte",
         f"Estimé : {format_seconds(estimated_seconds)} | réel : {format_seconds(elapsed)} | "
-        f"cœurs utilisés : {worker_count}"
+        f"cœurs utilisés : {worker_count}",
     )
     return {key: np.array([row[key] for row in rows], dtype=float) for key in rows[0]}, elapsed
 
@@ -830,7 +939,6 @@ def run_hysteresis_comparison_with_progress(
     parallel_workers: int = 1,
 ):
     progress = st.progress(0, text="Comparaison d'hystérèse : démarrage")
-    status = st.empty()
     start = time.perf_counter()
     total = max(1, len(values))
     max_cycle = max(cycles) if cycles else 1
@@ -852,11 +960,14 @@ def run_hysteresis_comparison_with_progress(
         )
 
     def run_one(value: float) -> dict:
-        if mode == "prestrain":
-            return run_hysteresis_prestrain_case(dict(settings), float(value))
-        if mode == "pressure_rate":
-            return run_hysteresis_pressure_rate_case(dict(settings), float(value), max_cycle)
-        raise ValueError("Mode de comparaison d'hystérèse inconnu.")
+        try:
+            if mode == "prestrain":
+                return run_hysteresis_prestrain_case(dict(settings), float(value))
+            if mode == "pressure_rate":
+                return run_hysteresis_pressure_rate_case(dict(settings), float(value), max_cycle)
+            raise ValueError("Mode de comparaison d'hystérèse inconnu.")
+        except Exception as exc:
+            stop_after_failure(progress, "Comparaison d'hystérèse", exc)
 
     if worker_count <= 1:
         cases = []
@@ -892,7 +1003,9 @@ def run_hysteresis_comparison_with_progress(
                     update_progress(done, f"{label} | {worker_count} cœurs")
             cases.sort(key=lambda case: float(case.get("value", 0.0)))
         except Exception as exc:
-            st.warning(f"Calcul parallèle indisponible ({exc}). Repli en calcul séquentiel.")
+            fallback = f"Calcul parallèle indisponible ({exc}). Repli en calcul séquentiel."
+            notify("warning", "Comparaison d'hystérèse", fallback)
+            log_event("warning", "Comparaison d'hystérèse", fallback)
             cases = []
             for index, value in enumerate(values, start=1):
                 label = f"précontrainte = {value:.3f}" if mode == "prestrain" else f"vitesse = {value:.3f} MPa/s"
@@ -901,9 +1014,11 @@ def run_hysteresis_comparison_with_progress(
 
     elapsed = time.perf_counter() - start
     progress.empty()
-    status.success(
+    notify(
+        "success",
+        "Comparaison d'hystérèse",
         f"Estimé : {format_seconds(estimated_seconds)} | réel : {format_seconds(elapsed)} | "
-        f"cœurs utilisés : {worker_count}"
+        f"cœurs utilisés : {worker_count}",
     )
     return {"mode": mode, "values": values, "cycles": cycles, "cases": cases}, elapsed
 
@@ -930,6 +1045,7 @@ def sidebar_help(lines: list[str]) -> None:
 # ce fichier sous le nom « __mp_main__ » : sans cette garde, chacun ré-exécutait
 # toute la page (lecture et écriture des réglages, caches, figures).
 def main() -> None:
+    start_page_messages()
     settings = dict(DEFAULT_SETTINGS)
     loaded_settings, settings_load_notice = load_settings_with_report()
     settings.update(loaded_settings)
@@ -937,6 +1053,7 @@ def main() -> None:
         # Gardé pour la session : les réglages sont réenregistrés dès cet affichage,
         # le fichier ne redonnera plus ce message.
         st.session_state["_settings_load_notice"] = settings_load_notice
+        log_event("warning", "Réglages", settings_load_notice)
     settings.setdefault("parallel_workers", INTERFACE_DEFAULT_PARALLEL_WORKERS)
     settings.setdefault("suspended_show_geometry_plot", INTERFACE_DEFAULT_SUSPENDED_SHOW_GEOMETRY_PLOT)
     settings = apply_view_query_params(settings)
@@ -1016,9 +1133,9 @@ def main() -> None:
     st.title("Calculateur d'actionneur Cavatappi")
     st.caption("Interface de simulation pour la géométrie, l'actionnement et la visualisation du modèle TCPA.")
     if st.session_state.pop("_settings_notice", None):
-        st.success("Les paramètres ont été importés et appliqués.")
+        notify("success", "Réglages", "Les paramètres ont été importés et appliqués.")
     if st.session_state.get("_settings_load_notice"):
-        st.warning(st.session_state["_settings_load_notice"])
+        notify("warning", "Réglages", st.session_state["_settings_load_notice"])
 
     st.sidebar.header("Paramètres d'entrée")
     settings_actions = st.sidebar.container()
@@ -1708,11 +1825,12 @@ def main() -> None:
         if pressure_input_mode == "measured_csv"
         else error
     )
-    generated_profile_notice = (
-        f"Ce calcul suit le profil généré, que ces réglages refusent. {generated_profile_error}"
-        if generated_profile_error is not None and error is None
-        else None
-    )
+    if generated_profile_error is not None and error is None:
+        notify(
+            "warning",
+            "Relaxation, précontrainte, masse suspendue, hystérèse",
+            f"Ces calculs suivent le profil généré, que ces réglages refusent : ils sont désactivés. {generated_profile_error}",
+        )
 
     with settings_actions:
         with st.expander("Importer ou exporter les paramètres", expanded=False):
@@ -1754,6 +1872,7 @@ def main() -> None:
                         save_settings(imported_settings)
                     except (OSError, TypeError, ValueError, OverflowError, RecursionError) as exc:
                         st.error(f"Import impossible : {exc}")
+                        log_event("error", "Import des paramètres", f"Import impossible : {exc}")
                     else:
                         clear_widget_state()
                         st.session_state["_settings_notice"] = True
@@ -1768,6 +1887,7 @@ def main() -> None:
                 use_container_width=True,
             ):
                 reset_settings_and_cache()
+                log_event("info", "Réglages", "Paramètres d’origine restaurés, résultats enregistrés effacés.")
                 clear_widget_state()
                 try:
                     st.query_params.clear()
@@ -1779,22 +1899,28 @@ def main() -> None:
     if "hysteresis_comparison_result" not in st.session_state:
         st.session_state["hysteresis_comparison_result"] = None
     if error:
-        st.error(error)
+        notify("error", "Réglages", error)
     maxwell_sum = float(maxwell_E0_mpa + maxwell_E1_mpa + maxwell_E2_mpa + maxwell_E3_mpa)
     effective_axial_modulus = maxwell_sum if axial_modulus_mode == "maxwell_sum" else float(E_axial_mpa)
     if maxwell_sum > 0.0 and abs(effective_axial_modulus - maxwell_sum) / maxwell_sum > 0.05:
-        st.info(
+        notify(
+            "info",
+            "Matériau du tube",
             f"Le module axial ({float(E_axial_mpa):.2f} MPa) diffère de la somme des modules de Maxwell "
-            f"({maxwell_sum:.2f} MPa). Le modèle conserve E_axial pour l'anisotropie et les modules de Maxwell pour leurs fractions relatives."
+            f"({maxwell_sum:.2f} MPa). Le modèle conserve E_axial pour l'anisotropie et les modules de Maxwell pour leurs fractions relatives.",
         )
     if maxwell_anisotropy_mode == "axial_test_only":
-        st.caption(
+        notify(
+            "info",
+            "Maxwell généralisé",
             "Les paramètres de relaxation proviennent d'un essai de traction : seule la direction matérielle axiale "
-            "reçoit ces branches. La raideur radiale et le cisaillement restent élastiques faute de mesures dédiées."
+            "reçoit ces branches. La raideur radiale et le cisaillement restent élastiques faute de mesures dédiées.",
         )
     if section_update_mode == "updated":
-        st.caption(
-            "La section radiale évolutive actualise les rayons et l'orientation du matériau à chaque incrément."
+        notify(
+            "info",
+            "Géométrie",
+            "La section radiale évolutive actualise les rayons et l'orientation du matériau à chaque incrément.",
         )
     active_v4 = [
         label
@@ -1808,7 +1934,7 @@ def main() -> None:
         if active
     ]
     if active_v4:
-        st.caption("Mécanismes Alpha V4 actifs : " + ", ".join(active_v4) + ".")
+        notify("info", "Mécanismes Alpha V4", "Mécanismes actifs : " + ", ".join(active_v4) + ".")
     if str(integration) == "paper_explicit":
         active_tau = [
             eta / modulus
@@ -1820,9 +1946,11 @@ def main() -> None:
             if modulus > 0.0
         ]
         if active_tau and float(dt) > min(active_tau):
-            st.warning(
+            notify(
+                "warning",
+                "Solveur",
                 f"Le pas dépasse le plus petit temps de relaxation ({min(active_tau):.3g} s). "
-                "Euler reste éventuellement stable sous 2 tau, mais peut osciller ; l'intégration exponentielle est recommandée."
+                "Euler reste éventuellement stable sous 2 tau, mais peut osciller ; l'intégration exponentielle est recommandée.",
             )
 
     if bool(use_fixed_duration):
@@ -1894,7 +2022,8 @@ def main() -> None:
             parallel_worker_count,
             estimated_hysteresis_parallel_factor,
         )
-    hysteresis_compare_disabled = generated_profile_error is not None or estimated_hysteresis_compare_cost > 750_000
+    # Aucune limite de coût : un calcul long se lance, son estimation s'affiche.
+    hysteresis_compare_disabled = generated_profile_error is not None
     blocked_ignore_keys = BLOCKED_RESULT_IGNORE_KEYS | (
         GENERATED_PROFILE_SETTING_KEYS if pressure_input_mode == "measured_csv" else set()
     )
@@ -1913,11 +2042,11 @@ def main() -> None:
     )
 
     missing_measured_pressure = pressure_input_mode == "measured_csv" and uploaded_pressure_payload is None
-    run_disabled = error is not None or estimated_cost > 250_000 or missing_measured_pressure
-    relaxation_run_disabled = generated_profile_error is not None or estimated_relaxation_cost > 250_000
-    suspended_run_disabled = generated_profile_error is not None or estimated_suspended_cost > 250_000
+    run_disabled = error is not None or missing_measured_pressure
+    relaxation_run_disabled = generated_profile_error is not None
+    suspended_run_disabled = generated_profile_error is not None
     prestrain_range_error = float(eps_study_max) <= float(eps_study_min)
-    prestrain_study_run_disabled = generated_profile_error is not None or prestrain_range_error or estimated_prestrain_cost > 750_000
+    prestrain_study_run_disabled = generated_profile_error is not None or prestrain_range_error
 
     st.markdown(
         (
@@ -1935,15 +2064,19 @@ def main() -> None:
         use_container_width=True,
         disabled=run_disabled,
     )
-    with action_status_column:
-        if missing_measured_pressure:
-            st.warning("Importez l’historique de pression CSV avant de lancer ce calcul.")
-        elif estimated_cost > 250_000:
-            st.warning("Réduisez le maillage, la durée ou le nombre de cycles pour lancer ce calcul dans l’interface.")
-        elif estimated_cost > 120_000:
-            st.caption("Calcul exigeant : la barre de progression donnera une estimation actualisée.")
-        else:
-            st.caption("Les résultats seront conservés et réaffichés au prochain démarrage.")
+    # Résumé des messages de la page, rempli à la fin : les messages eux-mêmes
+    # sont dans l'onglet « Log / Info ».
+    message_summary_slot = action_status_column.empty()
+    if missing_measured_pressure:
+        notify("warning", "Actionnement bloqué", "Importez l’historique de pression CSV avant de lancer ce calcul.")
+    elif estimated_cost > 250_000:
+        notify(
+            "warning",
+            "Actionnement bloqué",
+            f"Calcul long : ~{format_seconds(estimated_compute_s)} estimées. Gardez l’onglet ouvert pendant le calcul.",
+        )
+    elif estimated_cost > 120_000:
+        notify("info", "Actionnement bloqué", "Calcul exigeant : la barre de progression donnera une estimation actualisée.")
     field_export_requested = field_export_from_settings(current_settings)
     field_steps = None
     # Le mode final ne dépend pas du nombre de pas ; en CSV mesuré, estimated_steps
@@ -1954,9 +2087,10 @@ def main() -> None:
     if field_export_requested.enabled and error is None and not missing_measured_pressure:
         field_steps = estimated_steps
         # La grille réelle (instants de transition compris) n'est construite que
-        # pour un calcul lançable, donc au plus ~62 500 pas ; le mode final n'en
+        # jusqu'à ~62 500 pas (coût 250 000), pour ne pas ralentir chaque
+        # affichage ; au-delà l'estimation reste approchée. Le mode final n'en
         # dépend pas.
-        if not run_disabled and not field_steps_exact:
+        if not run_disabled and estimated_cost <= 250_000 and not field_steps_exact:
             try:
                 field_steps = blocked_field_steps(current_settings, uploaded_pressure_payload)
                 field_steps_exact = True
@@ -1972,10 +2106,13 @@ def main() -> None:
         )
         if field_rows_estimate > FIELD_ROWS_WARNING and not run_disabled:
             advice = "augmentez n" if field_export_requested.mode == "every_n" else "préférez un export toutes les n itérations"
-            st.warning(field_message + f" Fichier volumineux, lent à générer et à ouvrir : {advice}.")
+            notify("warning", "Export des champs", field_message + f" Fichier volumineux, lent à générer et à ouvrir : {advice}.")
         else:
-            st.caption(field_message)
+            notify("info", "Export des champs", field_message)
 
+    # Résumé provisoire, visible pendant un calcul qui peut durer longtemps ;
+    # réécrit en fin de page avec les messages des onglets.
+    render_message_summary(message_summary_slot)
     if run_blocked_now:
         (config, data, summary), elapsed_s = run_with_progress(
             "Actionnement bloqué",
@@ -2067,6 +2204,7 @@ def main() -> None:
             "Étude de la relaxation",
             "Étude de précontrainte",
             "Masse suspendue",
+            "Log / Info",
         ]
     )
 
@@ -2074,25 +2212,26 @@ def main() -> None:
         blocked_csv_payload = None
         st.caption(f"Temps de calcul estimé : ~{format_seconds(estimated_compute_s)}.")
         if estimated_cost > 120_000 and not run_disabled:
-            st.warning("Cette simulation peut être lente. Augmentez le pas de temps ou réduisez le maillage pour l'interaction.")
-        if run_disabled and error is None:
-            if missing_measured_pressure:
-                st.warning("Chargez l'historique CSV avant de relancer l'actionnement bloqué.")
-            else:
-                st.warning("Les réglages du solveur sont trop lourds pour l'interface interactive.")
+            notify(
+                "warning",
+                "Actionnement bloqué",
+                "Cette simulation peut être lente. Augmentez le pas de temps ou réduisez le maillage pour l'interaction.",
+            )
 
         stored_result = st.session_state["calculator_result"]
         result = stored_result if blocked_result_current else None
         if result is None:
-            if stored_result is None:
-                st.info("Utilisez le bouton de calcul situé au-dessus du visualiseur pour lancer le modèle.")
-            else:
-                st.warning(
+            st.info("Utilisez le bouton de calcul situé au-dessus du visualiseur pour lancer le modèle.")
+            if stored_result is not None:
+                # Un seul message pour les trois onglets du résultat bloqué.
+                notify(
+                    "warning",
+                    "Actionnement bloqué",
                     stale_result_message(
                         stored_result,
                         "l'actionnement bloqué pour mettre les résultats à jour",
                         history_changed=blocked_settings_match,
-                    )
+                    ),
                 )
         else:
             summary = result["summary"]
@@ -2150,16 +2289,7 @@ def main() -> None:
         stored_result = st.session_state["calculator_result"]
         result = stored_result if blocked_result_current else None
         if result is None:
-            if stored_result is None:
-                st.info("Veuillez d'abord lancer le modèle dans l'onglet 'Sortie modèle' pour afficher les courbes temporelles.")
-            else:
-                st.warning(
-                    stale_result_message(
-                        stored_result,
-                        "l'actionnement bloqué pour mettre les courbes à jour",
-                        history_changed=blocked_settings_match,
-                    )
-                )
+            st.info("Veuillez d'abord lancer le modèle dans l'onglet 'Sortie modèle' pour afficher les courbes temporelles.")
         else:
             # Le graphe est rempli APRÈS le volet expérimental : si un essai est
             # chargé et que la pression injectée est l'historique mesuré, la
@@ -2339,7 +2469,7 @@ def main() -> None:
                         st.pyplot(experimental_figure)
                         plt.close(experimental_figure)
                 except (KeyError, ValueError) as exc:
-                    st.error(f"Impossible de lire cet essai expérimental : {exc}")
+                    notify("error", "Essai expérimental", f"Impossible de lire cet essai expérimental : {exc}")
 
         if result is not None:
             with temporal_plot_slot:
@@ -2378,16 +2508,7 @@ def main() -> None:
             stored_result = st.session_state["calculator_result"]
             result = stored_result if blocked_result_current else None
             if result is None:
-                if stored_result is None:
-                    st.info("Veuillez d'abord lancer le modèle dans l'onglet 'Sortie modèle' pour afficher l'hystérèse.")
-                else:
-                    st.warning(
-                        stale_result_message(
-                            stored_result,
-                            "l'actionnement bloqué pour mettre l'hystérèse à jour",
-                            history_changed=blocked_settings_match,
-                        )
-                    )
+                st.info("Veuillez d'abord lancer le modèle dans l'onglet 'Sortie modèle' pour afficher l'hystérèse.")
             else:
                 try:
                     config = result["config"]
@@ -2404,7 +2525,7 @@ def main() -> None:
                     st.pyplot(fig_hyst)
                     plt.close(fig_hyst)
                 except Exception as exc:
-                    st.error(f"Impossible de tracer l'hystérèse : {exc}")
+                    notify("error", "Hystérèse", f"Impossible de tracer l'hystérèse : {exc}")
         else:
             if hysteresis_compare_mode == "prestrain":
                 comparison_values = hysteresis_prestrain_compare_values
@@ -2415,11 +2536,13 @@ def main() -> None:
 
             st.caption(f"Temps de calcul estimé : ~{format_seconds(estimated_hysteresis_compare_s)}.")
             if not comparison_values:
-                st.warning(f"Veuillez indiquer au moins une valeur positive pour les {comparison_label}.")
+                notify("warning", "Comparaison d'hystérèse", f"Veuillez indiquer au moins une valeur positive pour les {comparison_label}.")
             if estimated_hysteresis_compare_cost > 120_000 and not hysteresis_compare_disabled:
-                st.warning("Cette comparaison peut être lente. Réduisez le nombre de valeurs, augmentez le pas de temps ou réduisez le maillage.")
-            if hysteresis_compare_disabled and error is None:
-                st.warning(generated_profile_notice or "Cette comparaison d'hystérèse est trop lourde pour l'interface interactive.")
+                notify(
+                    "warning",
+                    "Comparaison d'hystérèse",
+                    "Cette comparaison peut être lente. Réduisez le nombre de valeurs, augmentez le pas de temps ou réduisez le maillage.",
+                )
 
             if st.button("Calculer la comparaison d'hystérèse", disabled=hysteresis_compare_disabled or not comparison_values):
                 comparison_result, elapsed_s = run_hysteresis_comparison_with_progress(
@@ -2464,7 +2587,7 @@ def main() -> None:
                         f"(estimé {format_seconds(comparison_result.get('estimated_s', 0.0))})"
                     )
                 except Exception as exc:
-                    st.error(f"Impossible de tracer la comparaison d'hystérèse : {exc}")
+                    notify("error", "Comparaison d'hystérèse", f"Impossible de tracer la comparaison d'hystérèse : {exc}")
 
         if hysteresis_export_cases:
             try:
@@ -2486,9 +2609,11 @@ def main() -> None:
         relaxation_csv_payload = None
         st.caption(f"Temps de calcul estimé : ~{format_seconds(estimated_relaxation_compute_s)}.")
         if estimated_relaxation_cost > 120_000 and not relaxation_run_disabled:
-            st.warning("La relaxation peut être lente. Augmentez le pas de temps, réduisez le maintien ou réduisez le maillage.")
-        if relaxation_run_disabled and error is None:
-            st.warning(generated_profile_notice or "Les réglages de relaxation sont trop lourds pour l'interface interactive.")
+            notify(
+                "warning",
+                "Relaxation",
+                "La relaxation peut être lente. Augmentez le pas de temps, réduisez le maintien ou réduisez le maillage.",
+            )
 
         if st.button("Calculer la relaxation à pression constante", disabled=relaxation_run_disabled):
             (config, data, summary), elapsed_s = run_with_progress(
@@ -2522,10 +2647,13 @@ def main() -> None:
             else None
         )
         if relaxation_result is None:
-            if stored_relaxation_result is None:
-                st.info("Veuillez lancer la relaxation pour afficher les courbes de maintien à pression constante.")
-            else:
-                st.warning(stale_result_message(stored_relaxation_result, "la relaxation pour mettre les courbes à jour"))
+            st.info("Veuillez lancer la relaxation pour afficher les courbes de maintien à pression constante.")
+            if stored_relaxation_result is not None:
+                notify(
+                    "warning",
+                    "Relaxation",
+                    stale_result_message(stored_relaxation_result, "la relaxation pour mettre les courbes à jour"),
+                )
         else:
             relaxation_data = relaxation_result["data"]
             hold_start_index = int(relaxation_data["hold_start_index"])
@@ -2561,13 +2689,17 @@ def main() -> None:
         prestrain_csv_payload = None
         st.caption(f"Temps de calcul estimé : ~{format_seconds(estimated_prestrain_compute_s)}.")
         if estimated_prestrain_cost > 120_000 and not prestrain_study_run_disabled:
-            st.warning(
-                "L'étude de précontrainte peut être lente. Réduisez le nombre de valeurs, augmentez le pas de temps ou réduisez le maillage."
+            notify(
+                "warning",
+                "Étude de précontrainte",
+                "L'étude de précontrainte peut être lente. Réduisez le nombre de valeurs, augmentez le pas de temps ou réduisez le maillage.",
             )
         if prestrain_range_error:
-            st.warning("La précontrainte maximale doit être strictement supérieure à la précontrainte minimale.")
-        elif prestrain_study_run_disabled and error is None:
-            st.warning(generated_profile_notice or "Les réglages de l'étude de précontrainte sont trop lourds pour l'interface interactive.")
+            notify(
+                "warning",
+                "Étude de précontrainte",
+                "La précontrainte maximale doit être strictement supérieure à la précontrainte minimale.",
+            )
 
         if st.button("Calculer l'étude force max / précontrainte", disabled=prestrain_study_run_disabled):
             eps_values = np.linspace(float(eps_study_min), float(eps_study_max), int(eps_study_points))
@@ -2602,10 +2734,13 @@ def main() -> None:
             else None
         )
         if prestrain_result is None:
-            if stored_prestrain_result is None:
-                st.info("Veuillez lancer l'étude pour afficher la force maximale en fonction de la précontrainte initiale.")
-            else:
-                st.warning(stale_result_message(stored_prestrain_result, "l'étude pour mettre la courbe à jour"))
+            st.info("Veuillez lancer l'étude pour afficher la force maximale en fonction de la précontrainte initiale.")
+            if stored_prestrain_result is not None:
+                notify(
+                    "warning",
+                    "Étude de précontrainte",
+                    stale_result_message(stored_prestrain_result, "l'étude pour mettre la courbe à jour"),
+                )
         else:
             study_data = prestrain_result["data"]
             best_index = int(np.nanargmax(study_data["force_max_mN"]))
@@ -2636,10 +2771,12 @@ def main() -> None:
 
     with tabs[5]:
         if anchor_creep_c_mm > 0.0:
-            st.info(
+            notify(
+                "info",
+                "Masse suspendue",
                 "Le fluage d'ancrage (Alpha V4-5) ne s'applique qu'au mode bloqué : il court à partir du "
                 "verrouillage de la référence série, jamais établi en masse suspendue. Ici la réponse est "
-                "identique à c = 0."
+                "identique à c = 0.",
             )
         suspended_csv_payload = None
         load_N = float(suspended_mass_g) * 1.0e-3 * 9.80665
@@ -2660,11 +2797,17 @@ def main() -> None:
             f"temps de rampe jusqu'à Pmax : {format_seconds(suspended_ramp_time_s)}."
         )
         if float(suspended_duration_s) < suspended_ramp_time_s:
-            st.warning(
-                "La durée masse suspendue est plus courte que le temps nécessaire pour atteindre la pression maximale."
+            notify(
+                "warning",
+                "Masse suspendue",
+                "La durée masse suspendue est plus courte que le temps nécessaire pour atteindre la pression maximale.",
             )
         if bool(suspended_hold_pressure) and float(suspended_duration_s) <= suspended_ramp_time_s:
-            st.warning("Le maintien à pression constante ne sera visible que si la durée dépasse le temps de rampe.")
+            notify(
+                "warning",
+                "Masse suspendue",
+                "Le maintien à pression constante ne sera visible que si la durée dépasse le temps de rampe.",
+            )
         with st.expander("Comprendre le mode masse suspendue", expanded=False):
             st.markdown(
                 "Le solveur cherche la géométrie qui équilibre la charge suspendue avec les efforts du tube et du nylon : "
@@ -2692,13 +2835,17 @@ def main() -> None:
         if bool(current_settings["suspended_equilibrate_before_pressure"]):
             st.caption("La position initiale est calculée après stabilisation viscoélastique sous la masse à 0 MPa.")
         else:
-            st.warning(
-                "La stabilisation initiale est désactivée : la courbe inclura aussi la récupération de la précontrainte sous la masse."
+            notify(
+                "warning",
+                "Masse suspendue",
+                "La stabilisation initiale est désactivée : la courbe inclura aussi la récupération de la précontrainte sous la masse.",
             )
         if estimated_suspended_cost > 120_000 and not suspended_run_disabled:
-            st.warning("Le mode masse suspendue peut être lent. Augmentez le pas de temps ou réduisez le maillage.")
-        if suspended_run_disabled and error is None:
-            st.warning(generated_profile_notice or "Les réglages du mode masse suspendue sont trop lourds pour l'interface interactive.")
+            notify(
+                "warning",
+                "Masse suspendue",
+                "Le mode masse suspendue peut être lent. Augmentez le pas de temps ou réduisez le maillage.",
+            )
 
         if st.button("Calculer l'actionnement avec masse suspendue", disabled=suspended_run_disabled):
             (config, data, summary), elapsed_s = run_with_progress(
@@ -2732,10 +2879,13 @@ def main() -> None:
             else None
         )
         if suspended_result is None:
-            if stored_suspended_result is None:
-                st.info("Veuillez lancer le calcul pour afficher l'actionnement libre sous masse suspendue.")
-            else:
-                st.warning(stale_result_message(stored_suspended_result, "le calcul masse suspendue pour mettre les courbes à jour"))
+            st.info("Veuillez lancer le calcul pour afficher l'actionnement libre sous masse suspendue.")
+            if stored_suspended_result is not None:
+                notify(
+                    "warning",
+                    "Masse suspendue",
+                    stale_result_message(stored_suspended_result, "le calcul masse suspendue pour mettre les courbes à jour"),
+                )
         else:
             suspended_data = suspended_result["data"]
             render_metric_grid(
@@ -2775,6 +2925,11 @@ def main() -> None:
         )
         if suspended_result is not None:
             render_field_section(suspended_result, current_settings, "champs_masse_suspendue.csv", "fields_suspended")
+
+    # En dernier : tous les messages de la page sont alors rassemblés.
+    with tabs[6]:
+        render_log_tab()
+    render_message_summary(message_summary_slot)
 
 
 if __name__ == "__main__":

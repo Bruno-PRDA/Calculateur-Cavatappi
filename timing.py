@@ -83,7 +83,9 @@ def estimate_compute_seconds(
     active_workers = max(1, min(int(workers), int(cases)))
     parallel_overhead = 0.45 * max(0, active_workers - 1)
     estimate = model["overhead_s"] + parallel_overhead + model["seconds_per_cost"] * effective_cost
-    return min(3600.0, max(0.3, float(estimate)))
+    # Pas de plafond : l'interface lance aussi les calculs de plusieurs heures,
+    # dont l'estimation et la barre de progression doivent rester justes.
+    return max(0.3, float(estimate))
 
 
 def record_timing_sample(

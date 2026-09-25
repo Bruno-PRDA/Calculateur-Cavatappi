@@ -129,6 +129,23 @@ Base.write_fields_csv(data["fields"], "champs.csv")
 sigma_rr = Base.field_component(data["fields"], "sigma_rr")  # (instants, couches, phi)
 ```
 
+## Onglet « Log / Info »
+
+Les messages de la page (erreurs de réglages, calcul long ou lent, résultat
+à relancer, calcul terminé, notes sur le matériau ou les mécanismes actifs,
+estimation de l'export des champs…) sont regroupés dans le dernier onglet,
+« Log / Info ». À côté du bouton de calcul, une ligne les compte et renvoie
+vers cet onglet. L'onglet garde aussi un historique horodaté de la session :
+calculs terminés (durée réelle et estimée) ou interrompus, erreurs (inscrites
+quand elles apparaissent), imports et réinitialisations ; le bouton
+« Effacer l'historique » le vide.
+
+Restent à leur place : les messages de la barre latérale (fichier CSV
+invalide, import impossible…), les légendes des résultats et les invitations
+« lancez le calcul » d'un onglet encore vide. Un calcul interrompu par une
+erreur arrête la page : l'erreur et les messages déjà rassemblés s'affichent
+alors à cet endroit.
+
 ## Affichage d'un essai expérimental
 
 Dans l'onglet des courbes temporelles, le volet `Afficher un essai expérimental
@@ -462,7 +479,7 @@ enregistré n'est repris que si l'historique lu dans le CSV est celui du calcul.
 Seul l'actionnement bloqué utilise ce CSV. La relaxation, l'étude de
 précontrainte, la masse suspendue et la comparaison d'hystérèse suivent
 toujours leur propre profil généré, et sont validées comme en profil généré
-(frottement sec, limite de coût) : passer en CSV mesuré puis revenir au
+(frottement sec) : passer en CSV mesuré puis revenir au
 profil généré ne périme aucun de leurs résultats, ni celui de l'actionnement
 bloqué calculé en profil généré. Réciproquement, en CSV mesuré, les réglages
 du profil généré (P_max, vitesse, cycles, durée) ne périment pas

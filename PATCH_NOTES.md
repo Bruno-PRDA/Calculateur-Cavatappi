@@ -1,5 +1,48 @@
 # Notes de version
 
+## 2026.09.25 — Onglet « Log / Info » (interface)
+
+- Les messages de la page ne s'affichent plus un peu partout : ils sont
+  regroupés dans un nouvel onglet, « Log / Info » (`notify`), et une ligne à
+  côté du bouton de calcul les compte (« 1 erreur, 2 avertissements : voir
+  l'onglet « Log / Info » »), suivie du rappel que les résultats sont
+  conservés. Ce résumé est déjà affiché pendant un calcul de l'actionnement
+  bloqué.
+- L'onglet garde un historique horodaté de la session (`log_event`) :
+  chaque calcul terminé (durée réelle et estimée) ou interrompu, chaque repli
+  séquentiel du calcul parallèle, import (réussi ou non) et
+  réinitialisation. Une erreur de la page n'y est inscrite que lorsqu'elle
+  apparaît : tant qu'elle reste affichée, elle n'est pas répétée ; si elle
+  disparaît puis revient, elle l'est de nouveau. L'historique survit à
+  l'import et à la réinitialisation, et un bouton l'efface.
+- Doublons supprimés : un résultat bloqué périmé donne un seul message au
+  lieu de trois (Sortie modèle, Courbes, Hystérèse), et l'avertissement du
+  frottement sec en profil généré un seul au lieu de quatre.
+- Restent en place : barre latérale, légendes des résultats, invitations
+  « lancez le calcul » des onglets vides. Un calcul interrompu par une
+  erreur (y compris l'étude de précontrainte et la comparaison d'hystérèse,
+  qui affichaient jusqu'ici la trace brute de Streamlit) arrête la page :
+  l'erreur et les messages déjà rassemblés s'affichent alors sur place, et
+  l'interruption entre dans l'historique. Moteur inchangé.
+
+## 2026.09.25 — Plus de limite de durée de calcul dans l'interface
+
+- Les calculs ne sont plus désactivés au-delà d'un coût estimé (250 000 pour
+  l'actionnement bloqué, la relaxation et la masse suspendue, 750 000 pour
+  l'étude de précontrainte et la comparaison d'hystérèse) : un calcul de
+  30 minutes ou plus se lance. Le temps estimé reste affiché dans la barre de
+  calcul et dans chaque onglet, et un avertissement « Calcul long » le
+  rappelle (onglet « Log / Info ») ; gardez l'onglet ouvert pendant le
+  calcul. L'estimation n'est plus plafonnée à 1 h
+  (`timing.estimate_compute_seconds`), sans quoi la barre de progression
+  serait restée à 95 % pendant la fin d'un calcul plus long.
+- Restent bloquants : les erreurs de réglages, l'absence de fichier en CSV
+  mesuré, le contrôle du frottement sec pour les calculs à profil généré,
+  une précontrainte maximale inférieure ou égale à la minimale pour l'étude
+  de précontrainte et une liste de valeurs vide pour la comparaison
+  d'hystérèse. L'estimation de la taille du CSV des champs reste exacte
+  jusqu'à ~62 500 pas, approchée au-delà. Moteur inchangé.
+
 ## 2026.09.25 — Stockage des réglages et calcul parallèle (interface)
 
 Défauts antérieurs à l'export des champs, relevés par la vérification du
